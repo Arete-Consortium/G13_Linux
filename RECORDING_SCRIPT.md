@@ -207,7 +207,7 @@ ls -lh demo_optimized.gif
 
 ### Add to Repository
 ```bash
-cp demo_optimized.gif /home/arete/G13_Linux/demo.gif
+cp demo_optimized.gif ./demo.gif
 
 # Update README.md (add at top)
 # ![Demo](demo.gif)
