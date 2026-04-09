@@ -195,3 +195,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 - [PyPI Package](https://pypi.org/project/g13-linux/)
 - [GitHub Issues](https://github.com/AreteDriver/G13_Linux/issues)
 - [Logitech G13 Specs](https://support.logi.com/hc/en-us/articles/360024844133)
+- [Discord](https://discord.gg/fdzQkrt8) — Join the community
