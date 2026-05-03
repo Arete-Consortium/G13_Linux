@@ -127,13 +127,17 @@ class TestG13DeviceConnect:
         connected = []
         device.device_connected.connect(lambda: connected.append(True))
 
-        with patch("g13_linux.gui.models.g13_device.open_g13", return_value=mock_handle):
+        with patch(
+            "g13_linux.gui.models.g13_device.find_device",
+            return_value=(mock_handle, {}),
+        ) as mock_find:
             result = device.connect()
 
         assert result is True
         assert device.is_connected is True
         assert device.handle is mock_handle
         assert len(connected) == 1
+        mock_find.assert_called_once_with(use_libusb=False, return_diagnostics=True)
 
     def test_connect_success_libusb(self, qtbot):
         """Test successful connection via libusb."""
@@ -141,11 +145,15 @@ class TestG13DeviceConnect:
 
         mock_handle = MagicMock()
 
-        with patch("g13_linux.gui.models.g13_device.open_g13_libusb", return_value=mock_handle):
+        with patch(
+            "g13_linux.gui.models.g13_device.find_device",
+            return_value=(mock_handle, {}),
+        ) as mock_find:
             result = device.connect()
 
         assert result is True
         assert device.is_connected is True
+        mock_find.assert_called_once_with(use_libusb=True, return_diagnostics=True)
 
     def test_connect_failure_runtime_error(self, qtbot):
         """Test connection failure with RuntimeError."""
@@ -155,7 +163,7 @@ class TestG13DeviceConnect:
         device.error_occurred.connect(errors.append)
 
         with patch(
-            "g13_linux.gui.models.g13_device.open_g13",
+            "g13_linux.gui.models.g13_device.find_device",
             side_effect=RuntimeError("Device not found"),
         ):
             result = device.connect()
@@ -173,7 +181,7 @@ class TestG13DeviceConnect:
         device.error_occurred.connect(errors.append)
 
         with patch(
-            "g13_linux.gui.models.g13_device.open_g13",
+            "g13_linux.gui.models.g13_device.find_device",
             side_effect=Exception("Unknown error"),
         ):
             result = device.connect()
@@ -182,6 +190,37 @@ class TestG13DeviceConnect:
         assert device.is_connected is False
         assert len(errors) == 1
         assert "Unexpected error" in errors[0]
+
+    def test_connect_failure_none_handle(self, qtbot):
+        """Test connection failure when discovery returns no handle."""
+        device = G13Device()
+        errors = []
+        device.error_occurred.connect(errors.append)
+
+        with patch("g13_linux.gui.models.g13_device.find_device", return_value=(None, {})):
+            result = device.connect()
+
+        assert result is False
+        assert device.is_connected is False
+        assert len(errors) == 1
+        assert "Failed to connect" in errors[0]
+
+    def test_connect_failure_includes_backend_diagnostics(self, qtbot):
+        """Test connection failure message includes backend-level diagnostics."""
+        device = G13Device()
+        errors = []
+        device.error_occurred.connect(errors.append)
+
+        with patch(
+            "g13_linux.gui.models.g13_device.find_device",
+            return_value=(None, {"hidraw": "Permission denied", "libusb": "pyusb not installed"}),
+        ):
+            result = device.connect()
+
+        assert result is False
+        assert len(errors) == 1
+        assert "hidraw: Permission denied" in errors[0]
+        assert "libusb: pyusb not installed" in errors[0]
 
 
 class TestG13DeviceDisconnect:

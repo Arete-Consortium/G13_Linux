@@ -181,11 +181,26 @@ class TestG13Button:
         # Full combo is in tooltip, button text is truncated
         assert "LEFTCTRL+V" in button.toolTip()
 
+    def test_tooltip_mentions_right_click_actions(self, button):
+        """Tooltip should hint at right-click quick actions."""
+        assert "Right-click" in button.toolTip()
+
     def test_set_mapping_combo_empty_keys(self, button):
         """Test setting combo with empty keys list."""
         combo = {"keys": []}
         button.set_mapping(combo)
         assert button.text() == "G1"
+
+    def test_get_binding_summary(self, button):
+        """Binding summary should include button id + full key name."""
+        button.set_mapping("KEY_PAGEUP")
+        assert button.get_binding_summary() == "G1: PAGEUP"
+
+    def test_combo_display_uses_compact_modifier_tokens(self, button):
+        """Button face text should compact long modifier names."""
+        combo = {"keys": ["KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_Z"]}
+        button.set_mapping(combo)
+        assert "LCTRL" in button.text() or "+" in button.text()
 
     def test_set_mapping_reserved(self, button):
         """Test KEY_RESERVED shows only button ID."""

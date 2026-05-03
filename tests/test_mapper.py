@@ -2,6 +2,9 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+pytest.importorskip("evdev")
 from evdev import ecodes as e
 
 

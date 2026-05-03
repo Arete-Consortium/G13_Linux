@@ -6,12 +6,58 @@ Handles G13 joystick input with two modes:
 2. Digital mode: Maps joystick directions to keyboard keys
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
-from evdev import AbsInfo, UInput
-from evdev import ecodes as e
+try:
+    from evdev import AbsInfo, UInput
+    from evdev import ecodes as e
+except Exception:  # pragma: no cover - exercised on non-Linux/dev hosts
+
+    class AbsInfo:  # type: ignore[no-redef]
+        """Lightweight fallback to preserve constructor compatibility in tests."""
+
+        def __init__(self, value=0, min=0, max=0, fuzz=0, flat=0, resolution=0):
+            self.value = value
+            self.min = min
+            self.max = max
+            self.fuzz = fuzz
+            self.flat = flat
+            self.resolution = resolution
+
+    class _FallbackEcodes:
+        """Best-effort ecodes shim when evdev is unavailable."""
+
+        EV_KEY = 0x01
+        EV_ABS = 0x03
+        ABS_X = 0x00
+        ABS_Y = 0x01
+        BTN_JOYSTICK = 0x120
+
+        def __init__(self):
+            self._key_cache: dict[str, int] = {}
+
+        def __getattr__(self, name: str) -> int:
+            if name.startswith("KEY_"):
+                if name not in self._key_cache:
+                    # Keep deterministic synthetic keycodes.
+                    self._key_cache[name] = len(self._key_cache) + 0x100
+                return self._key_cache[name]
+            raise AttributeError(name)
+
+    class UInput:  # type: ignore[no-redef]
+        """Fallback UInput that raises; caller catches and surfaces cleanly."""
+
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            raise RuntimeError("evdev unavailable")
+
+    e = _FallbackEcodes()  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
 
 
 class JoystickMode(Enum):
@@ -39,23 +85,77 @@ class JoystickConfig:
     # Diagonal support
     allow_diagonals: bool = True
 
+    @staticmethod
+    def _parse_key_mapping(value, default: str) -> str:
+        """
+        Parse key mapping from modern or legacy profile formats.
+
+        Supported formats:
+        - "KEY_W" (modern flat string)
+        - {"keys": ["KEY_LEFTALT", "KEY_LEFT"], ...} (legacy directional mapping)
+        - ["KEY_W", ...] (fallback)
+        """
+        if isinstance(value, str):
+            return value
+
+        if isinstance(value, dict):
+            keys = value.get("keys", [])
+            if isinstance(keys, list):
+                for key_name in keys:
+                    if isinstance(key_name, str):
+                        return key_name
+
+            key_name = value.get("key")
+            if isinstance(key_name, str):
+                return key_name
+
+            return default
+
+        if isinstance(value, list | tuple):
+            for key_name in value:
+                if isinstance(key_name, str):
+                    return key_name
+
+        return default
+
     @classmethod
     def from_dict(cls, data: dict) -> "JoystickConfig":
-        """Create config from dict (profile loading)"""
-        mode_str = data.get("mode", "analog")
+        """Create config from dict (profile loading), including legacy formats."""
+        if not isinstance(data, dict):
+            data = {}
+
+        mode_str = data.get("mode")
+        if mode_str is None:
+            # Legacy directional configs without explicit modern mode
+            if any(direction in data for direction in ("up", "down", "left", "right")):
+                mode_str = "digital"
+            else:
+                mode_str = "analog"
+
+        mode_aliases = {
+            "directional": "digital",  # legacy profile value
+        }
+        mode_str = mode_aliases.get(str(mode_str).lower(), str(mode_str).lower())
+
         try:
             mode = JoystickMode(mode_str)
         except ValueError:
             mode = JoystickMode.ANALOG
 
+        # Accept both modern flat keys and legacy directional objects
+        key_up = data.get("key_up", data.get("up"))
+        key_down = data.get("key_down", data.get("down"))
+        key_left = data.get("key_left", data.get("left"))
+        key_right = data.get("key_right", data.get("right"))
+
         return cls(
             mode=mode,
             deadzone=data.get("deadzone", 20),
             sensitivity=data.get("sensitivity", 1.0),
-            key_up=data.get("key_up", "KEY_UP"),
-            key_down=data.get("key_down", "KEY_DOWN"),
-            key_left=data.get("key_left", "KEY_LEFT"),
-            key_right=data.get("key_right", "KEY_RIGHT"),
+            key_up=cls._parse_key_mapping(key_up, "KEY_UP"),
+            key_down=cls._parse_key_mapping(key_down, "KEY_DOWN"),
+            key_left=cls._parse_key_mapping(key_left, "KEY_LEFT"),
+            key_right=cls._parse_key_mapping(key_right, "KEY_RIGHT"),
             allow_diagonals=data.get("allow_diagonals", True),
         )
 
@@ -109,7 +209,7 @@ class JoystickHandler:
                 self._start_digital()
             return True
         except Exception as e:
-            print(f"Failed to start joystick handler: {e}")
+            logger.warning(f"Failed to start joystick handler: {e}")
             return False
 
     def _start_analog(self):

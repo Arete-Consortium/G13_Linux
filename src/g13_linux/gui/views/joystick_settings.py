@@ -32,13 +32,21 @@ class JoystickSettingsWidget(QWidget):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
 
+        intro = QLabel(
+            "Choose how the thumbstick should behave. "
+            "Use Button Mapper to set the STICK click action."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #888;")
+        layout.addWidget(intro)
+
         # Mode selection
         mode_group = QGroupBox("Joystick Mode")
         mode_layout = QFormLayout(mode_group)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Analog (Virtual Joystick)", "analog")
-        self.mode_combo.addItem("Digital (Arrow Keys)", "digital")
+        self.mode_combo.addItem("Analog (Virtual Gamepad)", "analog")
+        self.mode_combo.addItem("Digital (Map to Keys)", "digital")
         self.mode_combo.addItem("Disabled", "disabled")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_layout.addRow("Mode:", self.mode_combo)
@@ -52,7 +60,7 @@ class JoystickSettingsWidget(QWidget):
         layout.addWidget(mode_group)
 
         # Analog settings
-        self.analog_group = QGroupBox("Analog Settings")
+        self.analog_group = QGroupBox("Analog Mode Settings")
         analog_layout = QFormLayout(self.analog_group)
 
         self.sensitivity_slider = QSlider()
@@ -77,9 +85,12 @@ class JoystickSettingsWidget(QWidget):
         # Deadzone
         self.deadzone_spin = QSpinBox()
         self.deadzone_spin.setMinimum(5)
-        self.deadzone_spin.setMaximum(100)
+        self.deadzone_spin.setMaximum(127)
         self.deadzone_spin.setValue(20)
         self.deadzone_spin.setSuffix(" (0-127)")
+        self.deadzone_spin.setToolTip(
+            "How far the stick must move before a direction key is pressed."
+        )
         self.deadzone_spin.valueChanged.connect(self._on_setting_changed)
         digital_layout.addRow("Deadzone:", self.deadzone_spin)
 
@@ -88,6 +99,10 @@ class JoystickSettingsWidget(QWidget):
         self.key_down_combo = self._create_key_combo()
         self.key_left_combo = self._create_key_combo()
         self.key_right_combo = self._create_key_combo()
+        self.key_up_combo.setToolTip("Key sent when pushing the stick up")
+        self.key_down_combo.setToolTip("Key sent when pushing the stick down")
+        self.key_left_combo.setToolTip("Key sent when pushing the stick left")
+        self.key_right_combo.setToolTip("Key sent when pushing the stick right")
 
         digital_layout.addRow("Up:", self.key_up_combo)
         digital_layout.addRow("Down:", self.key_down_combo)
@@ -96,15 +111,18 @@ class JoystickSettingsWidget(QWidget):
 
         # Diagonals checkbox would go here but using combo for simplicity
         self.diagonals_combo = QComboBox()
-        self.diagonals_combo.addItem("Allow Diagonals", True)
-        self.diagonals_combo.addItem("Cardinal Only", False)
+        self.diagonals_combo.addItem("8-way (Allow Diagonals)", True)
+        self.diagonals_combo.addItem("4-way (No Diagonals)", False)
+        self.diagonals_combo.setToolTip(
+            "8-way can press two direction keys together. 4-way restricts to one direction."
+        )
         self.diagonals_combo.currentIndexChanged.connect(self._on_setting_changed)
         digital_layout.addRow("Diagonals:", self.diagonals_combo)
 
         layout.addWidget(self.digital_group)
 
         # Current direction indicator
-        self.direction_label = QLabel("Direction: center")
+        self.direction_label = QLabel("Stick direction: center")
         self.direction_label.setStyleSheet("background: #333; padding: 8px; border-radius: 4px;")
         layout.addWidget(self.direction_label)
 
@@ -153,9 +171,9 @@ class JoystickSettingsWidget(QWidget):
         """Update the mode description label"""
         mode = self.mode_combo.currentData()
         descriptions = {
-            "analog": "Creates a virtual joystick device. Games will see it as a real joystick. Best for games with native joystick support.",
-            "digital": "Converts joystick movement to keyboard keys. Best for games that use WASD or arrow keys.",
-            "disabled": "Joystick input is ignored. Use this if your game has native G13 support.",
+            "analog": "Use this when a game supports controllers/joysticks directly.",
+            "digital": "Use this to translate stick movement into keyboard keys (for example WASD or arrows).",
+            "disabled": "Ignore stick movement. STICK click can still be mapped in Button Mapper.",
         }
         self.mode_desc.setText(descriptions.get(mode, ""))
 
@@ -248,7 +266,7 @@ class JoystickSettingsWidget(QWidget):
 
     def update_direction(self, direction: str):
         """Update the direction indicator"""
-        self.direction_label.setText(f"Direction: {direction}")
+        self.direction_label.setText(f"Stick direction: {direction}")
 
         # Color based on direction
         if direction == "center":

@@ -6,6 +6,13 @@ import pytest
 from PyQt6.QtWidgets import QApplication
 
 
+def _tab_visible(tab_widget, index: int) -> bool:
+    """Qt compatibility helper for tab visibility checks."""
+    if hasattr(tab_widget, "isTabVisible"):
+        return tab_widget.isTabVisible(index)
+    return tab_widget.tabBar().isTabVisible(index)
+
+
 # Ensure QApplication exists for widget tests
 @pytest.fixture(scope="module")
 def qapp():
@@ -40,6 +47,9 @@ class TestMainWindow:
         assert window.monitor_widget is not None
         assert window.hardware_widget is not None
         assert window.macro_widget is not None
+        assert window.session_summary is not None
+        assert window.tab_hint_label is not None
+        assert window.quick_setup_button is not None
 
     def test_has_status_bar(self, qapp):
         """Test MainWindow has status bar."""
@@ -58,6 +68,100 @@ class TestMainWindow:
         window.set_status("Test message")
 
         assert window.status_bar.currentMessage() == "Test message"
+
+    def test_set_session_summary(self, qapp):
+        """Test session summary values are updated."""
+        from g13_linux.gui.views.main_window import MainWindow
+
+        window = MainWindow()
+        window.set_session_summary("eve", 12, "digital")
+
+        assert "eve" in window.session_summary.profile_label.text()
+        assert "12" in window.session_summary.bindings_label.text()
+        assert "digital" in window.session_summary.joystick_label.text()
+
+    def test_diagnostics_button_visibility_tracks_connection(self, qapp):
+        """Diagnostics button should hide on connect and show on disconnect."""
+        from g13_linux.gui.views.main_window import MainWindow
+
+        window = MainWindow()
+        # Use hidden-state instead of isVisible(): top-level window is not shown in tests.
+        assert window.device_banner.diagnostics_button.isHidden() is False
+
+        window.set_device_connected(True, "Connected")
+        assert window.device_banner.diagnostics_button.isHidden() is True
+
+        window.set_device_connected(False, "Disconnected")
+        assert window.device_banner.diagnostics_button.isHidden() is False
+
+    def test_diagnostics_button_emits_main_window_signal(self, qapp):
+        """Clicking diagnostics button should emit diagnostics_requested signal."""
+        from g13_linux.gui.views.main_window import MainWindow
+
+        window = MainWindow()
+        received = []
+        window.diagnostics_requested.connect(lambda: received.append(True))
+
+        window.device_banner.diagnostics_button.click()
+
+        assert received == [True]
+
+    def test_quick_setup_button_emits_main_window_signal(self, qapp):
+        """Clicking quick setup button should emit quick_setup_requested signal."""
+        from g13_linux.gui.views.main_window import MainWindow
+
+        window = MainWindow()
+        received = []
+        window.quick_setup_requested.connect(lambda: received.append(True))
+
+        window.quick_setup_button.click()
+
+        assert received == [True]
+
+    def test_tab_hint_updates_for_selected_tab(self, qapp):
+        """Test tab hint reflects the current selected tab."""
+        from g13_linux.gui.views.main_window import MainWindow
+
+        window = MainWindow()
+
+        # Default tab hint should be populated
+        assert len(window.tab_hint_label.text()) > 0
+
+        # Select a different tab and ensure hint updates
+        window.tab_scope_selector.setCurrentText("Core + Advanced")
+        monitor_index = window._tabs.indexOf(window.monitor_widget)
+        window._tabs.setCurrentIndex(monitor_index)
+        assert "live button" in window.tab_hint_label.text().lower()
+
+    def test_core_scope_hides_advanced_tabs_by_default(self, qapp):
+        """Test core scope hides advanced tabs on startup."""
+        from g13_linux.gui.views.main_window import MainWindow
+
+        window = MainWindow()
+
+        macros_idx = window._tabs.indexOf(window.macro_widget)
+        hardware_idx = window._tabs.indexOf(window.hardware_widget)
+        monitor_idx = window._tabs.indexOf(window.monitor_widget)
+
+        assert window.tab_scope_selector.currentText() == "Core"
+        assert _tab_visible(window._tabs, macros_idx) is False
+        assert _tab_visible(window._tabs, hardware_idx) is False
+        assert _tab_visible(window._tabs, monitor_idx) is False
+
+    def test_scope_toggle_reveals_advanced_tabs(self, qapp):
+        """Test switching to full scope reveals advanced tabs."""
+        from g13_linux.gui.views.main_window import MainWindow
+
+        window = MainWindow()
+        window.tab_scope_selector.setCurrentText("Core + Advanced")
+
+        macros_idx = window._tabs.indexOf(window.macro_widget)
+        hardware_idx = window._tabs.indexOf(window.hardware_widget)
+        monitor_idx = window._tabs.indexOf(window.monitor_widget)
+
+        assert _tab_visible(window._tabs, macros_idx) is True
+        assert _tab_visible(window._tabs, hardware_idx) is True
+        assert _tab_visible(window._tabs, monitor_idx) is True
 
     def test_setup_app_profiles(self, qapp):
         """Test setup_app_profiles adds widget and tab."""

@@ -26,6 +26,55 @@ COLOR_PRESETS = {
 }
 
 
+def cmd_doctor(args):
+    """Diagnose G13 detection, backend availability, and common setup issues."""
+    from .device import find_g13_hidraw_info, probe_device_backends
+
+    prefer_libusb = getattr(args, "libusb_first", False)
+    backend_order = "libusb -> hidraw" if prefer_libusb else "hidraw -> libusb"
+
+    print("G13 Linux Doctor")
+    print("================")
+    print(f"Probe order: {backend_order}")
+
+    hidraw_info = find_g13_hidraw_info()
+    if hidraw_info:
+        hidraw_path = hidraw_info["path"]
+        print(f"Hidraw path: {hidraw_path}")
+        access = []
+        access.append("r" if hidraw_info.get("readable") else "-")
+        access.append("w" if hidraw_info.get("writable") else "-")
+        source = hidraw_info.get("detection_source") or "unknown"
+        print(f"Hidraw access: {''.join(access)} (detected via {source})")
+    else:
+        print("Hidraw path: not found in /sys/class/hidraw")
+
+    diagnostics = probe_device_backends(use_libusb=prefer_libusb)
+    any_ok = False
+    for result in diagnostics:
+        backend = result.get("backend", "unknown")
+        if result.get("ok"):
+            any_ok = True
+            print(f"{backend}: OK")
+        else:
+            error = result.get("error") or "unknown error"
+            print(f"{backend}: FAILED ({error})")
+
+    if any_ok:
+        print("Result: at least one backend can open the G13.")
+        return
+
+    print("Result: no backend could open the G13.")
+    print("Troubleshooting:")
+    print("  1) Verify udev rules are installed and reloaded.")
+    print("     sudo cp udev/99-logitech-g13.rules /etc/udev/rules.d/")
+    print("     sudo udevadm control --reload-rules && sudo udevadm trigger")
+    print("  2) Re-plug the G13 and run this command again.")
+    print("  3) For input capture, try libusb mode with elevated permissions.")
+    print("     sudo g13-linux-gui --libusb")
+    sys.exit(1)
+
+
 def cmd_run(args):
     """Run the G13 input daemon."""
     if getattr(args, "simple", False):
@@ -62,6 +111,7 @@ def cmd_run(args):
         server_host = getattr(args, "server_host", "127.0.0.1")
         server_port = getattr(args, "server_port", 8765)
         static_dir = getattr(args, "static_dir", None)
+        use_libusb = getattr(args, "libusb", False)
 
         print("Starting G13 daemon...")
         daemon = G13Daemon(
@@ -69,6 +119,7 @@ def cmd_run(args):
             server_host=server_host,
             server_port=server_port,
             static_dir=static_dir,
+            use_libusb=use_libusb,
         )
         daemon.run()
 
@@ -330,6 +381,59 @@ def _profile_delete(pm, args):
         sys.exit(1)
 
 
+def _profile_migrate(pm, args):
+    """Migrate legacy profile joystick fields to canonical schema."""
+    from .profile_migration import migrate_profile_file
+
+    if args.all and args.name:
+        print("Error: Provide a profile name or --all, not both.", file=sys.stderr)
+        sys.exit(1)
+    if not args.all and not args.name:
+        print("Error: Provide a profile name or use --all.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.all:
+        profile_paths = sorted(pm.profiles_dir.glob("*.json"))
+        if not profile_paths:
+            print("No profiles found.")
+            return
+    else:
+        profile_path = pm.profiles_dir / f"{args.name}.json"
+        if not profile_path.exists():
+            print(f"Error: Profile '{args.name}' not found.", file=sys.stderr)
+            sys.exit(1)
+        profile_paths = [profile_path]
+
+    changed = 0
+    unchanged = 0
+    errors = 0
+
+    for path in profile_paths:
+        result = migrate_profile_file(path, dry_run=args.dry_run)
+        if result.error:
+            errors += 1
+            print(f"Error: {path.name}: {result.error}", file=sys.stderr)
+            continue
+
+        if result.changed:
+            changed += 1
+            action = "Would migrate" if args.dry_run else "Migrated"
+            print(f"{action}: {path.stem}")
+            for detail in result.details:
+                print(f"  - {detail}")
+        else:
+            unchanged += 1
+            print(f"No changes: {path.stem}")
+
+    if args.dry_run:
+        print(f"Dry run complete: {changed} to migrate, {unchanged} unchanged, {errors} errors.")
+    else:
+        print(f"Migration complete: {changed} migrated, {unchanged} unchanged, {errors} errors.")
+
+    if errors:
+        sys.exit(1)
+
+
 # Profile command dispatch
 _PROFILE_COMMANDS = {
     "list": _profile_list,
@@ -337,6 +441,7 @@ _PROFILE_COMMANDS = {
     "load": _profile_load,
     "create": _profile_create,
     "delete": _profile_delete,
+    "migrate": _profile_migrate,
 }
 
 
@@ -367,6 +472,11 @@ def main():
         "-s",
         action="store_true",
         help="Simple mode: key mapping only, no LCD menu",
+    )
+    run_parser.add_argument(
+        "--libusb",
+        action="store_true",
+        help="Prefer libusb backend first (often requires sudo for input capture)",
     )
     run_parser.add_argument(
         "--no-server",
@@ -433,6 +543,18 @@ def main():
     )
     effect_parser.set_defaults(func=cmd_effect)
 
+    # doctor command
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Diagnose G13 detection and backend setup",
+    )
+    doctor_parser.add_argument(
+        "--libusb-first",
+        action="store_true",
+        help="Probe libusb first, then hidraw",
+    )
+    doctor_parser.set_defaults(func=cmd_doctor)
+
     # profile command
     profile_parser = subparsers.add_parser("profile", help="Manage profiles")
     profile_subparsers = profile_parser.add_subparsers(dest="profile_cmd", help="Profile commands")
@@ -446,6 +568,25 @@ def main():
     profile_create.add_argument("name", help="Profile name")
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
     profile_delete.add_argument("name", help="Profile name")
+    profile_migrate = profile_subparsers.add_parser(
+        "migrate",
+        help="Migrate legacy joystick profile fields to canonical schema",
+    )
+    profile_migrate.add_argument(
+        "name",
+        nargs="?",
+        help="Profile name (omit when using --all)",
+    )
+    profile_migrate.add_argument(
+        "--all",
+        action="store_true",
+        help="Migrate all profiles in the profiles directory",
+    )
+    profile_migrate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview migrations without writing changes",
+    )
 
     profile_parser.set_defaults(func=cmd_profile)
 

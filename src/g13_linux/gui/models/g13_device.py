@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
         return None
 
 
-from ...device import open_g13, open_g13_libusb, read_event
+from ...device import find_device, read_event
 
 
 class G13Device(QObject):
@@ -68,10 +68,16 @@ class G13Device(QObject):
             hidraw which works without root but kernel driver blocks input.
         """
         try:
-            if self._use_libusb:
-                self._handle = open_g13_libusb()
-            else:
-                self._handle = open_g13()
+            result = find_device(use_libusb=self._use_libusb, return_diagnostics=True)
+            if isinstance(result, tuple):
+                self._handle, backend_errors = result
+            else:  # Backward compatibility for mocked/older find_device return style
+                self._handle = result
+                backend_errors = {}
+
+            if self._handle is None:
+                details = self._format_backend_error_details(backend_errors)
+                raise RuntimeError(f"Logitech G13 not found{details}")
             self._is_connected = True
             self.device_connected.emit()
             return True
@@ -87,6 +93,26 @@ class G13Device(QObject):
             error_msg = f"Unexpected error connecting to G13: {e}"
             self.error_occurred.emit(error_msg)
             return False
+
+    @staticmethod
+    def _format_backend_error_details(backend_errors: dict) -> str:
+        """Return short backend error summary for connection diagnostics."""
+        if not backend_errors:
+            return ""
+
+        order = ["hidraw", "libusb"]
+        parts = []
+
+        for backend in order:
+            if backend in backend_errors:
+                parts.append(f"{backend}: {backend_errors[backend]}")
+        for backend, message in backend_errors.items():
+            if backend not in order:
+                parts.append(f"{backend}: {message}")
+
+        if not parts:
+            return ""
+        return f" ({'; '.join(parts)})"
 
     def disconnect(self):
         """

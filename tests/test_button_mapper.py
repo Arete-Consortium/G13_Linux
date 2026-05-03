@@ -30,12 +30,13 @@ class TestButtonMapperWidget:
         assert len(widget.buttons) > 0  # Should have buttons
 
     def test_has_signal(self, qapp):
-        """Test ButtonMapperWidget has button_clicked signal."""
+        """Test ButtonMapperWidget has binding action signals."""
         from g13_linux.gui.views.button_mapper import ButtonMapperWidget
 
         widget = ButtonMapperWidget()
 
         assert hasattr(widget, "button_clicked")
+        assert hasattr(widget, "button_unbind_requested")
 
     def test_minimum_size(self, qapp):
         """Test ButtonMapperWidget has minimum size set."""
@@ -54,6 +55,15 @@ class TestButtonMapperWidget:
 
         assert hasattr(widget, "lcd_preview")
         assert widget.lcd_preview is not None
+
+    def test_has_binding_detail_label(self, qapp):
+        """Mapper should expose hover detail strip for full binding preview."""
+        from g13_linux.gui.views.button_mapper import ButtonMapperWidget
+
+        widget = ButtonMapperWidget()
+
+        assert hasattr(widget, "binding_detail_label")
+        assert "Hover a button" in widget.binding_detail_label.text()
 
     def test_joystick_initial_position(self, qapp):
         """Test joystick starts at center (128, 128)."""
@@ -173,6 +183,45 @@ class TestButtonMapperWidget:
         widget.buttons[button_id].click()
 
         assert button_id in received
+
+    def test_button_unbind_requested_signal(self, qapp):
+        """Test child button unbind signal is forwarded by mapper widget."""
+        from g13_linux.gui.views.button_mapper import ButtonMapperWidget
+
+        widget = ButtonMapperWidget()
+        received = []
+        widget.button_unbind_requested.connect(lambda bid: received.append(bid))
+
+        button_id = list(widget.buttons.keys())[0]
+        widget.buttons[button_id].unbind_requested.emit(button_id)
+
+        assert button_id in received
+
+    def test_hover_updates_binding_detail_text(self, qapp):
+        """Hovering a button should show full binding details in strip."""
+        from g13_linux.gui.views.button_mapper import ButtonMapperWidget
+
+        widget = ButtonMapperWidget()
+        button_id = list(widget.buttons.keys())[0]
+        widget.set_button_mapping(button_id, "KEY_SPACE")
+
+        widget.buttons[button_id].hover_changed.emit(button_id, True)
+        assert widget.binding_detail_label.text() == f"{button_id}: SPACE"
+
+        widget.buttons[button_id].hover_changed.emit(button_id, False)
+        assert "Hover a button" in widget.binding_detail_label.text()
+
+    def test_hovered_binding_detail_refreshes_after_mapping_change(self, qapp):
+        """Changing mapping while hovered should refresh detail strip text."""
+        from g13_linux.gui.views.button_mapper import ButtonMapperWidget
+
+        widget = ButtonMapperWidget()
+        button_id = list(widget.buttons.keys())[0]
+
+        widget.buttons[button_id].hover_changed.emit(button_id, True)
+        widget.set_button_mapping(button_id, "KEY_DELETE")
+
+        assert widget.binding_detail_label.text() == f"{button_id}: DELETE"
 
     def test_paint_event_no_crash(self, qapp):
         """Test paintEvent doesn't crash."""
@@ -351,19 +400,24 @@ class TestButtonMapperPainting:
 
 
 class TestButtonMapperBackgroundImage:
-    """Tests for background image loading."""
+    """Tests for background image source loading."""
 
     def test_load_background_image_no_files(self, qapp):
-        """Test _load_background_image returns None when no files exist."""
+        """Test background source is None when no files exist."""
         from g13_linux.gui.views.button_mapper import ButtonMapperWidget
 
-        with patch("os.path.exists", return_value=False):
-            widget = ButtonMapperWidget()
-            # The method is called during __init__ so we check result
-            assert widget.background_image is None
+        with patch(
+            "g13_linux.gui.views.button_mapper.resources.files",
+            side_effect=ModuleNotFoundError(),
+        ):
+            with patch("os.path.exists", return_value=False):
+                widget = ButtonMapperWidget()
+                # The method is called during __init__ so we check result
+                assert widget._background_source is None
+                assert widget.background_image is None
 
     def test_load_background_image_with_valid_file(self, qapp):
-        """Test _load_background_image loads valid image."""
+        """Test background source loads from valid fallback image file."""
         import os
         import tempfile
 
@@ -379,16 +433,21 @@ class TestButtonMapperBackgroundImage:
             pixmap.save(temp_path, "PNG")
 
         try:
-            with patch("os.path.exists", return_value=True):
-                with patch("os.path.join", return_value=temp_path):
-                    widget = ButtonMapperWidget()
-                    # Should have loaded an image
-                    assert widget.background_image is not None
+            with patch(
+                "g13_linux.gui.views.button_mapper.resources.files",
+                side_effect=ModuleNotFoundError(),
+            ):
+                with patch("os.path.exists", return_value=True):
+                    with patch("os.path.join", return_value=temp_path):
+                        widget = ButtonMapperWidget()
+                        # Should have loaded source + scaled view image
+                        assert widget._background_source is not None
+                        assert widget.background_image is not None
         finally:
             os.unlink(temp_path)
 
     def test_load_background_image_with_invalid_file(self, qapp):
-        """Test _load_background_image handles invalid image gracefully."""
+        """Test invalid image fallback leaves source unset."""
         import os
         import tempfile
 
@@ -406,9 +465,32 @@ class TestButtonMapperBackgroundImage:
                     return True
                 return False
 
-            with patch("os.path.exists", side_effect=exists_side_effect):
-                with patch("os.path.join", return_value=temp_path):
-                    ButtonMapperWidget()
-                    # Should have None since image is invalid
+            with patch(
+                "g13_linux.gui.views.button_mapper.resources.files",
+                side_effect=ModuleNotFoundError(),
+            ):
+                with patch("os.path.exists", side_effect=exists_side_effect):
+                    with patch("os.path.join", return_value=temp_path):
+                        widget = ButtonMapperWidget()
+                        assert widget._background_source is None
         finally:
             os.unlink(temp_path)
+
+    def test_update_background_image_scales_source(self, qapp):
+        """Test _update_background_image scales from cached source image."""
+        from PyQt6.QtGui import QPixmap
+
+        from g13_linux.gui.views.button_mapper import ButtonMapperWidget
+
+        widget = ButtonMapperWidget()
+        source = QPixmap(120, 80)
+        source.fill(Qt.GlobalColor.blue)
+        widget._background_source = source
+
+        # Resize above the widget minimum size so Qt applies the requested size.
+        widget.resize(1280, 820)
+        widget._update_background_image()
+
+        assert widget.background_image is not None
+        assert widget.background_image.width() == widget.width()
+        assert widget.background_image.height() == widget.height()

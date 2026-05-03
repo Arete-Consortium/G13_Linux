@@ -11,8 +11,8 @@ import json
 import logging
 import re
 import sys
+from contextlib import suppress
 from pathlib import Path
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -58,7 +58,8 @@ class ConnectionManager:
         logger.info(f"Client connected. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
         logger.info(f"Client disconnected. Total: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
@@ -77,7 +78,7 @@ manager = ConnectionManager()
 class DeviceState:
     def __init__(self):
         self.connected = False
-        self.active_profile: Optional[str] = None
+        self.active_profile: str | None = None
         self.active_mode = "M1"
         self.pressed_keys: set[str] = set()
         self.joystick = {"x": 0.0, "y": 0.0}
@@ -312,17 +313,28 @@ async def handle_ws_message(websocket: WebSocket, message: dict):
 
 
 # Device integration (when hardware available)
-device_task: Optional[asyncio.Task] = None
+device_task: asyncio.Task | None = None
 
 
 async def device_event_loop():
     """Poll device for events and broadcast to clients."""
+    device = None
     try:
-        from g13_linux.device import find_device
+        from g13_linux import device as g13_device
         from g13_linux.gui.models.event_decoder import EventDecoder
 
         decoder = EventDecoder()
-        device = find_device(use_libusb=True)
+        find_device = getattr(g13_device, "find_device", None)
+        if callable(find_device):
+            device = find_device(use_libusb=True)
+        elif hasattr(g13_device, "open_g13_libusb"):
+            logger.warning("find_device unavailable; falling back to open_g13_libusb()")
+            device = g13_device.open_g13_libusb()
+        elif hasattr(g13_device, "open_g13"):
+            logger.warning("find_device unavailable; falling back to open_g13()")
+            device = g13_device.open_g13()
+        else:
+            raise RuntimeError("No compatible device discovery function available")
 
         if device:
             device_state.connected = True
@@ -346,12 +358,26 @@ async def device_event_loop():
                     logger.debug(f"Device read: {e}")
 
                 await asyncio.sleep(0.01)
+        else:
+            logger.info("No G13 device detected; running in simulation mode")
     except ImportError:
         logger.warning("G13 device module not available, running in simulation mode")
+    except asyncio.CancelledError:
+        # Normal shutdown path
+        pass
     except Exception as e:
         logger.error(f"Device loop error: {e}")
-        device_state.connected = False
-        await manager.broadcast({"type": "device_disconnected"})
+    finally:
+        if device is not None:
+            try:
+                device.close()
+            except Exception as e:
+                logger.debug(f"Device close failed: {e}")
+
+        if device_state.connected:
+            device_state.connected = False
+            with suppress(Exception):
+                await manager.broadcast({"type": "device_disconnected"})
 
 
 @app.on_event("startup")
@@ -367,6 +393,8 @@ async def shutdown_event():
     """Clean up on server shutdown."""
     if device_task:
         device_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await device_task
     logger.info("G13 Web API server stopped")
 
 

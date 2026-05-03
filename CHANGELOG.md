@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-05-03
+
+### Added
+- Quick Setup Wizard flow in GUI with starter templates (Manual, MMO, FPS, Productivity) and optional one-step profile save.
+- Setup Assistant dialog for first-run connection failures with copy-ready diagnostics and udev/libusb recovery steps.
+- Ubuntu CI-like local test script: `scripts/test_ubuntu.sh`.
+- Profile migration utility and command for legacy joystick schemas:
+  - `g13-linux profile migrate <name>`
+  - `g13-linux profile migrate --all [--dry-run]`
+- New documentation: `docs/profile-migration.md`, `docs/release-checklist.md`, `docs/testing-ubuntu.md`.
+
+### Changed
+- Canonical joystick profile examples now use flat key fields (`key_up`, `key_down`, `key_left`, `key_right`) and explicit mode values.
+- `evdev` dependency now marked `platform_system == 'Linux'` for non-Linux dev environments.
+- README and web-GUI docs updated for new setup flow, diagnostics, and migration path.
+- CI workflow now runs security audit against installed project dependencies and reports type-check/security results explicitly (non-blocking).
+
+### Fixed
+- Daemon HID read path now uses a single read loop with fan-out, preventing split/dropped input events.
+- `HidrawDevice.read()` now supports `timeout_ms` compatibility with libusb call sites.
+- Device discovery diagnostics now report hidraw access flags and detection source (`uevent`/`usb_ids`) with clearer permission errors.
+- GUI profile save path now persists joystick settings reliably.
+- Legacy joystick profile parsing now accepts directional/nested formats and normalizes on save.
+- Packaging now includes GUI image assets required by mapper views.
+- Web backend device loop now degrades gracefully if discovery APIs differ and ensures clean device shutdown.
+
+## [1.6.0] - 2026-04-09
+
+### Changed
+- Refactor: `__version__` is now single-sourced from `pyproject.toml` via `importlib.metadata`.
+- Refactor: centralized path resolution in `_paths.py` module.
+- Type hints modernized to Python 3.10+ syntax.
+- Added `threading.Lock` for shared daemon state.
+- Exception chaining and narrowed `except` clauses in `device.py`.
+
+### Fixed
+- CodeQL alerts in capture/daemon/test scripts.
+- GUI button overlay positions now align consistently across rows.
+- Replaced `IOError` with `OSError` to satisfy ruff `UP024`.
+
+### Tooling
+- ruff bugbear/pyupgrade rules added; coverage gate raised to 80%.
+- Test coverage raised from 67% to 88% with 432 new tests.
+
 ## [1.5.1] - 2026-01-06
 
 ### Fixed
@@ -129,7 +173,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 For detailed changes, see the [commit history](https://github.com/AreteDriver/G13_Linux/commits/main).
 
-[Unreleased]: https://github.com/AreteDriver/G13_Linux/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/AreteDriver/G13_Linux/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/AreteDriver/G13_Linux/releases/tag/v1.5.1
+[1.5.0]: https://github.com/AreteDriver/G13_Linux/releases/tag/v1.5.0
+[1.4.0]: https://github.com/AreteDriver/G13_Linux/releases/tag/v1.4.0
+[1.3.0]: https://github.com/AreteDriver/G13_Linux/releases/tag/v1.3.0
 [1.2.2]: https://github.com/AreteDriver/G13_Linux/releases/tag/v1.2.2
 [1.2.1]: https://github.com/AreteDriver/G13_Linux/releases/tag/v1.2.1
 [1.2.0]: https://github.com/AreteDriver/G13_Linux/releases/tag/v1.2.0

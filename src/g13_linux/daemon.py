@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime
 
-from .device import open_g13
+from .device import find_device
 from .gui.models.event_decoder import EventDecoder
 from .gui.models.macro_manager import MacroManager
 from .gui.models.profile_manager import ProfileManager
@@ -53,6 +53,7 @@ class G13Daemon:
         server_host: str = "127.0.0.1",
         server_port: int = 8765,
         static_dir: str | None = None,
+        use_libusb: bool = False,
     ):
         """
         Initialize daemon (does not connect to device yet).
@@ -62,6 +63,7 @@ class G13Daemon:
             server_host: Host to bind server to
             server_port: Port for server
             static_dir: Directory for web GUI static files (default: auto-detect)
+            use_libusb: Prefer libusb backend first.
         """
         self._device = None
         self._mapper: G13Mapper | None = None
@@ -94,6 +96,7 @@ class G13Daemon:
         self._server_host = server_host
         self._server_port = server_port
         self._static_dir = static_dir
+        self._use_libusb = use_libusb
         self._server: G13Server | None = None
         self._server_loop: asyncio.AbstractEventLoop | None = None
 
@@ -130,11 +133,19 @@ class G13Daemon:
         Returns:
             True if connection successful
         """
-        try:
-            logger.info("Opening G13 device...")
-            self._device = open_g13()
-        except Exception as e:
-            logger.error(f"Could not open G13: {e}")
+        logger.info("Opening G13 device...")
+        result = find_device(use_libusb=self._use_libusb, return_diagnostics=True)
+        if isinstance(result, tuple):
+            self._device, backend_errors = result
+        else:  # Backward compatibility
+            self._device = result
+            backend_errors = {}
+
+        if self._device is None:
+            logger.error("Could not open G13")
+            if backend_errors:
+                for backend, error in backend_errors.items():
+                    logger.error(f"  {backend} failed: {error}")
             return False
 
         # Initialize hardware controllers
@@ -310,9 +321,6 @@ class G13Daemon:
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
 
-        # Start input handler
-        self._input_handler.start()
-
         # Start render thread
         self._render_thread = threading.Thread(target=self._render_loop, daemon=True, name="Render")
         self._render_thread.start()
@@ -335,13 +343,18 @@ class G13Daemon:
         )
         print(f"G13 opened. Press stick for menu.{server_msg} Ctrl+C to exit.")
 
-        # Main loop - handle key mapping
+        # Main loop - single source of device reads.
+        # We read once and fan out to all consumers to avoid split/dropped events.
         try:
             while self._running:
                 try:
                     data = self._device.read(timeout_ms=100)
                     if data:
+                        if self._input_handler:
+                            self._input_handler.process_report(data)
                         self._handle_raw_report(data)
+                    elif self._input_handler:
+                        self._input_handler.tick()
                 except Exception as e:
                     logger.debug(f"Read error: {e}")
                     time.sleep(0.01)

@@ -11,10 +11,14 @@ from g13_linux.device import (
     LibUSBDevice,
     _hidiocgfeature,
     _hidiocsfeature,
+    find_device,
     find_g13_hidraw,
+    find_g13_hidraw_info,
     open_g13,
     open_g13_libusb,
+    probe_device_backends,
     read_event,
+    scan_hidraw_devices,
 )
 
 
@@ -56,6 +60,16 @@ class TestHidrawDevice:
         device._file = mock_file
         result = device.read(64)
         assert result == [1, 2, 3]
+
+    def test_read_with_timeout_keyword_is_compatible(self):
+        """Hidraw read should accept timeout_ms kwarg like LibUSBDevice."""
+        mock_file = MagicMock()
+        mock_file.read.return_value = b"\x09\x0a"
+        device = HidrawDevice("/dev/hidraw0")
+        device._file = mock_file
+        result = device.read(timeout_ms=100)
+        assert result == [9, 10]
+        mock_file.read.assert_called_once_with(64)
 
     def test_read_empty(self):
         mock_file = MagicMock()
@@ -150,20 +164,64 @@ class TestFindG13Hidraw:
             result = find_g13_hidraw()
             assert result is None
 
+    def test_find_g13_fallbacks_to_usb_id_files(self, tmp_path):
+        hidraw0 = tmp_path / "hidraw0" / "device"
+        hidraw0.mkdir(parents=True)
+        (hidraw0 / "idVendor").write_text("046d\n")
+        (hidraw0 / "idProduct").write_text("c21c\n")
+
+        with patch("glob.glob", return_value=[str(tmp_path / "hidraw0")]):
+            result = find_g13_hidraw()
+            assert result == "/dev/hidraw0"
+
+    def test_find_g13_hidraw_info_returns_permissions_and_source(self, tmp_path):
+        hidraw0 = tmp_path / "hidraw0" / "device"
+        hidraw0.mkdir(parents=True)
+        (hidraw0 / "uevent").write_text("HID_ID=0003:0000046D:0000C21C\n")
+
+        with (
+            patch("glob.glob", return_value=[str(tmp_path / "hidraw0")]),
+            patch("os.access", side_effect=[True, False]),
+        ):
+            info = find_g13_hidraw_info()
+
+        assert info is not None
+        assert info["path"] == "/dev/hidraw0"
+        assert info["matched"] is True
+        assert info["readable"] is True
+        assert info["writable"] is False
+        assert info["detection_source"] == "uevent"
+
+    def test_scan_hidraw_devices_empty_when_no_entries(self):
+        with patch("glob.glob", return_value=[]):
+            assert scan_hidraw_devices() == []
+
 
 class TestOpenG13:
     """Tests for open_g13 function."""
 
     def test_open_g13_success(self):
-        with patch("g13_linux.device.find_g13_hidraw", return_value="/dev/hidraw0"):
+        with patch(
+            "g13_linux.device.find_g13_hidraw_info",
+            return_value={"path": "/dev/hidraw0", "matched": True},
+        ):
             with patch.object(HidrawDevice, "open"):
                 device = open_g13()
                 assert isinstance(device, HidrawDevice)
 
     def test_open_g13_not_found(self):
-        with patch("g13_linux.device.find_g13_hidraw", return_value=None):
+        with patch("g13_linux.device.find_g13_hidraw_info", return_value=None):
             with pytest.raises(RuntimeError, match="G13 not found"):
                 open_g13()
+
+    def test_open_g13_permission_error(self):
+        with patch(
+            "g13_linux.device.find_g13_hidraw_info",
+            return_value={"path": "/dev/hidraw0", "matched": True},
+        ):
+            with patch.object(HidrawDevice, "open", side_effect=PermissionError("nope")):
+                with pytest.raises(RuntimeError, match="Permission denied opening /dev/hidraw0"):
+                    open_g13()
 
 
 class TestReadEvent:
@@ -408,6 +466,91 @@ class TestOpenG13Libusb:
         with patch.object(LibUSBDevice, "open"):
             device = open_g13_libusb()
             assert isinstance(device, LibUSBDevice)
+
+
+class TestFindDevice:
+    """Tests for find_device helper."""
+
+    def test_find_device_prefers_libusb(self):
+        mock_device = MagicMock()
+        with (
+            patch("g13_linux.device.open_g13_libusb", return_value=mock_device) as mock_libusb,
+            patch("g13_linux.device.open_g13") as mock_hidraw,
+        ):
+            result = find_device(use_libusb=True)
+        assert result is mock_device
+        mock_libusb.assert_called_once()
+        mock_hidraw.assert_not_called()
+
+    def test_find_device_falls_back_to_hidraw(self):
+        mock_device = MagicMock()
+        with (
+            patch("g13_linux.device.open_g13_libusb", side_effect=RuntimeError("no libusb")),
+            patch("g13_linux.device.open_g13", return_value=mock_device) as mock_hidraw,
+        ):
+            result = find_device(use_libusb=True)
+        assert result is mock_device
+        mock_hidraw.assert_called_once()
+
+    def test_find_device_returns_none_when_unavailable(self):
+        with (
+            patch("g13_linux.device.open_g13_libusb", side_effect=RuntimeError("no libusb")),
+            patch("g13_linux.device.open_g13", side_effect=RuntimeError("no hidraw")),
+        ):
+            result = find_device(use_libusb=True)
+        assert result is None
+
+    def test_find_device_returns_diagnostics_when_requested(self):
+        with (
+            patch("g13_linux.device.open_g13_libusb", side_effect=RuntimeError("no libusb")),
+            patch("g13_linux.device.open_g13", side_effect=RuntimeError("no hidraw")),
+        ):
+            handle, diagnostics = find_device(use_libusb=True, return_diagnostics=True)
+        assert handle is None
+        assert diagnostics == {"libusb": "no libusb", "hidraw": "no hidraw"}
+
+    def test_find_device_returns_handle_and_prior_errors(self):
+        mock_device = MagicMock()
+        with (
+            patch("g13_linux.device.open_g13_libusb", side_effect=RuntimeError("no libusb")),
+            patch("g13_linux.device.open_g13", return_value=mock_device),
+        ):
+            handle, diagnostics = find_device(use_libusb=True, return_diagnostics=True)
+        assert handle is mock_device
+        assert diagnostics == {"libusb": "no libusb"}
+
+
+class TestProbeDeviceBackends:
+    """Tests for probe_device_backends diagnostics."""
+
+    def test_probe_device_backends_reports_failures(self):
+        with (
+            patch("g13_linux.device.open_g13", side_effect=RuntimeError("hidraw missing")),
+            patch("g13_linux.device.open_g13_libusb", side_effect=RuntimeError("libusb missing")),
+        ):
+            results = probe_device_backends(use_libusb=False)
+
+        assert results == [
+            {"backend": "hidraw", "ok": False, "error": "hidraw missing"},
+            {"backend": "libusb", "ok": False, "error": "libusb missing"},
+        ]
+
+    def test_probe_device_backends_closes_success_handles(self):
+        hidraw_handle = MagicMock()
+        libusb_handle = MagicMock()
+
+        with (
+            patch("g13_linux.device.open_g13", return_value=hidraw_handle),
+            patch("g13_linux.device.open_g13_libusb", return_value=libusb_handle),
+        ):
+            results = probe_device_backends(use_libusb=False)
+
+        assert results == [
+            {"backend": "hidraw", "ok": True, "error": None},
+            {"backend": "libusb", "ok": True, "error": None},
+        ]
+        hidraw_handle.close.assert_called_once()
+        libusb_handle.close.assert_called_once()
 
 
 class TestConstants:

@@ -128,12 +128,20 @@ class TestKeySelectorDialog:
         assert cancel_btn is not None
 
     def test_has_clear_mapping_button(self, dialog):
-        """Test dialog has Clear Mapping button."""
+        """Test dialog has Unbind Button button."""
         from PyQt6.QtWidgets import QPushButton
 
         buttons = dialog.findChildren(QPushButton)
-        clear_btn = next((b for b in buttons if b.text() == "Clear Mapping"), None)
+        clear_btn = next((b for b in buttons if b.text() == "Unbind Button"), None)
         assert clear_btn is not None
+
+    def test_has_keyboard_capture_button(self, dialog):
+        """Test dialog has keyboard capture shortcut flow."""
+        from PyQt6.QtWidgets import QPushButton
+
+        buttons = dialog.findChildren(QPushButton)
+        capture_btn = next((b for b in buttons if "Keyboard Capture" in b.text()), None)
+        assert capture_btn is not None
 
     def test_select_key_from_list(self, dialog, qtbot):
         """Test selecting a key from list sets internal state."""
@@ -155,12 +163,25 @@ class TestKeySelectorDialog:
         # The main key should be set (selected_key is set on accept())
         assert dialog._main_key is not None
 
+    def test_double_click_key_accepts_immediately(self, dialog):
+        """Double-click should select and accept in one action."""
+        from PyQt6.QtWidgets import QListWidget, QTabWidget
+
+        tabs = dialog.findChild(QTabWidget)
+        common_tab = tabs.widget(0)
+        list_widget = common_tab.findChild(QListWidget)
+        item = list_widget.item(0)
+
+        dialog._on_key_double_clicked(item)
+
+        assert dialog.selected_key == item.text()
+
     def test_clear_mapping_sets_reserved(self, dialog, qtbot):
-        """Test Clear Mapping sets KEY_RESERVED."""
+        """Test Unbind Button sets KEY_RESERVED."""
         from PyQt6.QtWidgets import QPushButton
 
         buttons = dialog.findChildren(QPushButton)
-        clear_btn = next(b for b in buttons if b.text() == "Clear Mapping")
+        clear_btn = next(b for b in buttons if b.text() == "Unbind Button")
 
         # Need to block accept() from closing
         dialog.done = lambda x: None
@@ -238,7 +259,7 @@ class TestKeySelectorComboKeys:
         from PyQt6.QtWidgets import QLabel
 
         labels = dialog.findChildren(QLabel)
-        preview = next((lbl for lbl in labels if "select a key" in lbl.text()), None)
+        preview = next((lbl for lbl in labels if "select a main key" in lbl.text()), None)
         assert preview is not None
 
     def test_simple_key_returns_string(self, dialog):
@@ -281,6 +302,46 @@ class TestKeySelectorComboKeys:
         assert "KEY_LEFTCTRL" in keys
         assert "KEY_LEFTSHIFT" in keys
         assert "KEY_S" in keys
+
+    def test_has_common_shortcut_preset_buttons(self, dialog):
+        """Quick preset buttons should exist for common actions."""
+        from PyQt6.QtWidgets import QPushButton
+
+        buttons = dialog.findChildren(QPushButton)
+        labels = {btn.text() for btn in buttons}
+        assert "Copy" in labels
+        assert "Paste" in labels
+        assert "Save" in labels
+
+    def test_apply_copy_preset(self, dialog):
+        """Applying Copy preset should prefill Ctrl+C mapping."""
+        dialog._apply_preset("Copy")
+        dialog.accept()
+
+        assert isinstance(dialog.selected_key, dict)
+        assert dialog.selected_key["label"] == "Copy"
+        assert "KEY_LEFTCTRL" in dialog.selected_key["keys"]
+        assert "KEY_C" in dialog.selected_key["keys"]
+
+    def test_enter_accepts_current_selection(self, dialog, qtbot):
+        """Enter key should accept when a main key is selected."""
+        dialog._main_key = "KEY_A"
+
+        qtbot.keyClick(dialog, Qt.Key.Key_Return)
+
+        assert dialog.selected_key == "KEY_A"
+
+    def test_qt_key_to_evdev_letter(self):
+        """Qt letter key should map to KEY_*."""
+        from g13_linux.gui.widgets.key_selector import KeySelectorDialog
+
+        assert KeySelectorDialog._qt_key_to_evdev(Qt.Key.Key_Q) == "KEY_Q"
+
+    def test_qt_key_to_evdev_function_key(self):
+        """Qt function key should map to KEY_F*."""
+        from g13_linux.gui.widgets.key_selector import KeySelectorDialog
+
+        assert KeySelectorDialog._qt_key_to_evdev(Qt.Key.Key_F5) == "KEY_F5"
 
     def test_load_existing_simple_mapping(self, qtbot):
         """Test loading existing simple mapping."""
