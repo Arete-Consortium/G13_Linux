@@ -31,6 +31,10 @@ jobs:
           queries: security-and-quality
 
       - name: Perform CodeQL Analysis
+        # Soft-fail: G13_Linux is currently private without GitHub Advanced Security,
+        # so result upload returns "Code scanning not enabled". The scan still runs.
+        # Remove continue-on-error if the repo goes public OR Advanced Security is enabled.
+        continue-on-error: true
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:python"

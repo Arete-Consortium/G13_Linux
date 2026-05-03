@@ -1,35 +1,37 @@
 # G13 Release Checklist
 
-Use this checklist for every `g13-linux` release from the `LinuxTools` monorepo.
+Use this checklist for every `g13-linux` release.
 
 ## 1. Version and tag alignment
 
-1. Confirm `project.version` in `g13/pyproject.toml`.
-2. Update `g13/CHANGELOG.md`.
-3. Use a `g13-vX.Y.Z` tag format (for example: `g13-v1.5.7`).
+1. Confirm `project.version` in `pyproject.toml`.
+2. Update `CHANGELOG.md` — promote `[Unreleased]` entries to `[X.Y.Z] - YYYY-MM-DD`.
+3. Use a `vX.Y.Z` tag format (for example: `v1.7.0`).
 4. Ensure the tag version matches `pyproject.toml` exactly.
 
 ## 2. Release gate validation
 
-1. Run Ubuntu parity tests locally when possible:
+1. Run tests locally:
+   - `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest tests/`
+2. Run Ubuntu parity tests locally when possible:
    - `./scripts/test_ubuntu.sh --system-deps`
-2. Confirm root workflow files are present:
-   - `.github/workflows/g13-ci.yml`
-   - `.github/workflows/g13-release.yml`
-3. Ensure `G13: CI` is green before or alongside the tag push.
+3. Verify lint + format:
+   - `ruff check src/ tests/ && ruff format --check src/ tests/`
+4. Build artifacts locally to catch errors before tagging:
+   - `python -m build && twine check dist/*`
+5. Ensure CI is green on `main` before tagging.
 
 ## 3. Trusted Publishing (PyPI) configuration
 
 If PyPI publish fails with `invalid-publisher`, configure (or update) the Trusted Publisher on PyPI with these exact values:
 
 - Owner: `AreteDriver`
-- Repository: `LinuxTools`
-- Workflow file: `.github/workflows/g13-release.yml`
+- Repository: `G13_Linux`
+- Workflow file: `.github/workflows/release.yml`
 - Environment (recommended): `pypi`
 
 Notes:
 - The workflow filename must match exactly.
-- If you changed from a previous repo/path (for example legacy single-project repos), update PyPI publisher settings to this monorepo workflow.
 - The workflow uses `id-token: write` and `environment: pypi`, which must match PyPI publisher configuration.
 
 Reference docs:
@@ -40,21 +42,21 @@ Reference docs:
 
 1. Push `main`.
 2. Create and push release tag:
-   - `git tag -a g13-vX.Y.Z -m "g13-linux vX.Y.Z"`
-   - `git push origin g13-vX.Y.Z`
-3. Verify `G13: Release` run:
+   - `git tag -a vX.Y.Z -m "vX.Y.Z — short summary"`
+   - `git push origin vX.Y.Z`
+3. Verify the `Release` workflow run:
    - test gate passes
    - AppImage build passes
    - GitHub release is created with:
      - `.whl`
      - `.tar.gz`
      - `.AppImage`
-4. Verify PyPI publish status.
-   - If Trusted Publisher is still not configured, GitHub release artifacts still publish, but PyPI upload will warn and be skipped.
+4. Verify PyPI publish status: `pip index versions g13-linux` should list the new version within ~1 minute.
 
 ## 5. Post-release checks
 
 1. Validate release page assets download correctly.
 2. Smoke test install on Ubuntu:
    - `pip install g13-linux==X.Y.Z`
-3. Confirm docs/examples still reflect current joystick schema and setup flow.
+3. Hardware smoke test if any device-facing changes shipped (see `docs/testing-ubuntu.md`).
+4. Confirm docs/examples still reflect current joystick schema and setup flow.

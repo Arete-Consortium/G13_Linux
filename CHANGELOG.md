@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Packaging now includes GUI image assets required by mapper views.
 - Web backend device loop now degrades gracefully if discovery APIs differ and ensures clean device shutdown.
 
-## [1.6.0] - 2026-04-09
+## [1.6.0] - 2026-03-13
 
 ### Changed
 - Refactor: `__version__` is now single-sourced from `pyproject.toml` via `importlib.metadata`.

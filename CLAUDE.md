@@ -4,8 +4,8 @@
 
 Linux userspace driver for Logitech G13 gaming keypad. Profile management, LCD control, RGB backlight, programmable macros, PyQt6 GUI, and WebSocket API.
 
-**Version**: 1.6.0
-**Language**: Python 3.10+ (44,758 lines across 216 files)
+**Version**: 1.7.0
+**Language**: Python 3.10+
 **License**: MIT
 **PyPI**: `g13-linux`
 
@@ -44,7 +44,7 @@ src/g13_linux/
     ├── views/          # UI views (profile manager, button mapper)
     ├── dialogs/        # Dialog windows
     └── widgets/        # Custom widgets
-tests/                  # 34 test files, mocked hardware
+tests/                  # 37 test files, mocked hardware (1,717 tests, 87% coverage)
 configs/                # Profile YAML templates
 udev/                   # Device access rules
 systemd/                # Service unit files
@@ -97,7 +97,7 @@ g13-linux-gui
 - **Docstrings**: Google style
 - **Paths**: `pathlib.Path` (never `os.path`)
 - **Line length**: 100 (ruff config)
-- **Coverage**: 60% minimum (enforced)
+- **Coverage**: 80% minimum (enforced via `[tool.coverage.report] fail_under`)
 - **Python versions**: 3.10, 3.11, 3.12
 
 ## Security Conventions
@@ -135,7 +135,7 @@ g13-linux-gui
 hidapi, evdev, pyusb, PyQt6, pynput, Pillow, aiohttp
 
 ### Dev
-pytest, pytest-cov, pytest-qt, ruff, mypy, build, twine, bandit
+pytest, pytest-asyncio, pytest-aiohttp, pytest-cov, pytest-qt, ruff, mypy, build, twine, bandit
 
 ## Hardware Testing Status
 
