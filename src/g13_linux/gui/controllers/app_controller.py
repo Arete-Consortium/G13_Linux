@@ -5,9 +5,11 @@ Main orchestrator connecting models to views.
 """
 
 from PyQt6.QtCore import QObject, pyqtSlot
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QInputDialog, QMessageBox, QWidget
 
+from ...device import find_g13_hidraw_info, probe_device_backends
 from ..dialogs.calibration_dialog import CalibrationDialog
+from ..dialogs.setup_assistant_dialog import SetupAssistantDialog
 from ..models.app_profile_rules import AppProfileRulesManager
 from ..models.event_decoder import EventDecoder
 from ..models.g13_device import G13Device
@@ -25,6 +27,42 @@ from .device_event_controller import DeviceEventThread
 
 class ApplicationController(QObject):
     """Main application orchestrator - connects models to views"""
+
+    _QUICK_BIND_SEQUENCE = ("G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8")
+    _QUICK_SETUP_MANUAL_TEMPLATE = "Manual (No Preset)"
+    _QUICK_SETUP_TEMPLATES: dict[str, dict[str, str | dict]] = {
+        _QUICK_SETUP_MANUAL_TEMPLATE: {},
+        "MMO Starter (1-8 Keys)": {
+            "G1": "KEY_1",
+            "G2": "KEY_2",
+            "G3": "KEY_3",
+            "G4": "KEY_4",
+            "G5": "KEY_5",
+            "G6": "KEY_6",
+            "G7": "KEY_7",
+            "G8": "KEY_8",
+        },
+        "FPS Starter": {
+            "G1": "KEY_R",
+            "G2": "KEY_F",
+            "G3": "KEY_G",
+            "G4": "KEY_Q",
+            "G5": "KEY_E",
+            "G6": "KEY_LEFTSHIFT",
+            "G7": "KEY_LEFTCTRL",
+            "G8": "KEY_SPACE",
+        },
+        "Productivity Starter": {
+            "G1": {"keys": ["KEY_LEFTCTRL", "KEY_C"], "label": "Copy"},
+            "G2": {"keys": ["KEY_LEFTCTRL", "KEY_V"], "label": "Paste"},
+            "G3": {"keys": ["KEY_LEFTCTRL", "KEY_X"], "label": "Cut"},
+            "G4": {"keys": ["KEY_LEFTCTRL", "KEY_Z"], "label": "Undo"},
+            "G5": {"keys": ["KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_Z"], "label": "Redo"},
+            "G6": {"keys": ["KEY_LEFTCTRL", "KEY_S"], "label": "Save"},
+            "G7": "KEY_ENTER",
+            "G8": "KEY_ESC",
+        },
+    }
 
     def __init__(self, main_window, use_libusb: bool = False):
         super().__init__()
@@ -55,8 +93,89 @@ class ApplicationController(QObject):
         self.current_joystick_config: dict = {}
         self.event_thread = None
         self._mr_button_held = False
+        self._setup_assistant_shown = False
 
         self._connect_signals()
+
+    @staticmethod
+    def _default_joystick_config() -> dict:
+        """Return canonical default joystick settings."""
+        return {
+            "mode": "analog",
+            "deadzone": 20,
+            "sensitivity": 1.0,
+            "key_up": "KEY_UP",
+            "key_down": "KEY_DOWN",
+            "key_left": "KEY_LEFT",
+            "key_right": "KEY_RIGHT",
+            "allow_diagonals": True,
+        }
+
+    @staticmethod
+    def _format_mapping_label(mapping: str | dict) -> str:
+        """Create short human-readable label for status updates."""
+        if isinstance(mapping, dict):
+            label = str(mapping.get("label", "")).strip()
+            if label:
+                return label
+            keys = mapping.get("keys", [])
+            return "+".join(str(key).replace("KEY_", "") for key in keys)
+
+        return str(mapping).replace("KEY_", "")
+
+    @staticmethod
+    def _is_bound_mapping(mapping) -> bool:
+        """Return True when mapping represents an active key bind."""
+        if not mapping or mapping == "KEY_RESERVED":
+            return False
+
+        if isinstance(mapping, dict):
+            keys = mapping.get("keys", [])
+            if not isinstance(keys, list):
+                return False
+            return any(isinstance(key, str) and key and key != "KEY_RESERVED" for key in keys)
+
+        return True
+
+    @staticmethod
+    def _normalize_mapping(mapping):
+        """Normalize mapping shape so conflict checks compare semantically."""
+        if isinstance(mapping, dict):
+            keys = mapping.get("keys", [])
+            if not isinstance(keys, list):
+                keys = []
+            filtered_keys = tuple(str(key) for key in keys if isinstance(key, str) and key)
+            return ("combo", filtered_keys)
+        return ("simple", mapping)
+
+    def _mappings_equal(self, left, right) -> bool:
+        """Compare two mapping payloads, handling dict/string formats."""
+        return self._normalize_mapping(left) == self._normalize_mapping(right)
+
+    def _find_conflicting_buttons(self, target_button_id: str, new_mapping) -> list[str]:
+        """Find other buttons already mapped to the same target mapping."""
+        conflicts = []
+        for button_id, existing_mapping in self.current_mappings.items():
+            if button_id == target_button_id:
+                continue
+            if not self._is_bound_mapping(existing_mapping):
+                continue
+            if self._mappings_equal(existing_mapping, new_mapping):
+                conflicts.append(button_id)
+        return conflicts
+
+    def _bound_mapping_count(self) -> int:
+        """Count bound buttons in current mappings."""
+        return sum(
+            1 for mapping in self.current_mappings.values() if self._is_bound_mapping(mapping)
+        )
+
+    def _refresh_session_summary(self):
+        """Push current profile/binding/joystick state into main window summary."""
+        profile_name = self.current_profile_name
+        bound_count = self._bound_mapping_count()
+        joystick_mode = self.current_joystick_config.get("mode", "analog")
+        self.main_window.set_session_summary(profile_name, bound_count, joystick_mode)
 
     def _connect_signals(self):
         """Wire up all signals between models and views"""
@@ -78,6 +197,7 @@ class ApplicationController(QObject):
         # Button mapper
         mapper_widget = self.main_window.button_mapper
         mapper_widget.button_clicked.connect(self._assign_key_to_button)
+        mapper_widget.button_unbind_requested.connect(self._clear_button_mapping)
 
         # Hardware controls
         hw_widget = self.main_window.hardware_widget
@@ -104,6 +224,12 @@ class ApplicationController(QObject):
 
         # Joystick settings
         self.main_window.joystick_widget.config_changed.connect(self._on_joystick_config_changed)
+
+        # Diagnostics shortcut from status banner
+        if hasattr(self.main_window, "diagnostics_requested"):
+            self.main_window.diagnostics_requested.connect(self._run_device_diagnostics)
+        if hasattr(self.main_window, "quick_setup_requested"):
+            self.main_window.quick_setup_requested.connect(self._run_quick_binding_wizard)
 
         # Wire joystick direction callback to update UI
         self.joystick_handler.on_direction_change = self._on_joystick_direction_change
@@ -132,10 +258,13 @@ class ApplicationController(QObject):
         else:
             self.main_window.set_status("No G13 device found")
             self.main_window.set_device_connected(False, "No G13 device found")
+            self._show_setup_assistant_if_needed()
 
         # Load available profiles
         profiles = self.profile_manager.list_profiles()
         self.main_window.profile_widget.update_profile_list(profiles)
+        self.current_joystick_config = self._default_joystick_config()
+        self._refresh_session_summary()
 
         # Set up app profiles widget
         self.main_window.setup_app_profiles(self.app_profile_rules, profiles)
@@ -233,6 +362,243 @@ class ApplicationController(QObject):
         self.main_window.set_status(f"Error: {message}")
         print(f"ERROR: {message}")
 
+    @pyqtSlot()
+    def _run_device_diagnostics(self):
+        """Open setup assistant with backend diagnostics and quick actions."""
+        self._open_setup_assistant(update_status=True)
+
+    @pyqtSlot()
+    def _run_quick_binding_wizard(self):
+        """Guide users through mapping core buttons with a minimal-click flow."""
+        sequence = list(self._QUICK_BIND_SEQUENCE)
+        total = len(sequence)
+        if total == 0:
+            self.main_window.set_status("Quick setup has no configured steps")
+            return
+
+        start_reply = QMessageBox.question(
+            self.main_window,
+            "Quick Setup Wizard",
+            (
+                f"Map your core buttons in a guided flow ({total} steps: {', '.join(sequence)}).\n\n"
+                "Continue?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if start_reply != QMessageBox.StandardButton.Yes:
+            self.main_window.set_status("Quick setup canceled")
+            return
+
+        template_name = self._select_quick_setup_template()
+        if not template_name:
+            self.main_window.set_status("Quick setup canceled")
+            return
+
+        updated = self._apply_quick_setup_template(template_name)
+        skipped = 0
+
+        if template_name != self._QUICK_SETUP_MANUAL_TEMPLATE:
+            refine_reply = QMessageBox.question(
+                self.main_window,
+                "Quick Setup Wizard",
+                (
+                    f"Applied template: {template_name}\n\n"
+                    "Yes: continue with guided per-button review.\n"
+                    "No: finish now.\n"
+                    "Cancel: stop quick setup."
+                ),
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if refine_reply == QMessageBox.StandardButton.Cancel:
+                self.main_window.set_status(
+                    f"Quick setup stopped: updated {updated}/{total}, skipped {skipped}"
+                )
+                return
+            if refine_reply == QMessageBox.StandardButton.No:
+                self._maybe_save_quick_setup_profile(updated, total, skipped)
+                return
+
+        for index, button_id in enumerate(sequence, start=1):
+            self.main_window.set_status(f"Quick setup {index}/{total}: map {button_id}")
+            current_mapping = self.current_mappings.get(button_id)
+            dialog = KeySelectorDialog(button_id, current_mapping, self.main_window)
+            dialog.setWindowTitle(f"Quick Setup {index}/{total} - {button_id}")
+
+            if not dialog.exec():
+                skip_reply = QMessageBox.question(
+                    self.main_window,
+                    "Quick Setup Wizard",
+                    (
+                        f"No binding selected for {button_id}.\n\n"
+                        "Yes: skip this button and continue.\n"
+                        "No: stop quick setup."
+                    ),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if skip_reply == QMessageBox.StandardButton.Yes:
+                    skipped += 1
+                    continue
+                self.main_window.set_status(
+                    f"Quick setup stopped: updated {updated}/{total}, skipped {skipped}"
+                )
+                return
+
+            selected_key = dialog.selected_key
+            if not selected_key:
+                skipped += 1
+                continue
+
+            if self._apply_mapping_to_button(button_id, selected_key):
+                updated += 1
+            else:
+                skipped += 1
+
+        self._maybe_save_quick_setup_profile(updated, total, skipped)
+
+    def _select_quick_setup_template(self) -> str | None:
+        """Prompt for a starter template and return selected template name."""
+        options = list(self._QUICK_SETUP_TEMPLATES.keys())
+        selected, ok = QInputDialog.getItem(
+            self.main_window,
+            "Quick Setup Template",
+            "Select a starter template:",
+            options,
+            0,
+            False,
+        )
+        if not ok:
+            return None
+        return selected
+
+    def _apply_quick_setup_template(self, template_name: str) -> int:
+        """Apply starter template mappings. Returns number of applied bindings."""
+        template = self._QUICK_SETUP_TEMPLATES.get(template_name, {})
+        if not template:
+            return 0
+
+        applied = 0
+        for button_id in self._QUICK_BIND_SEQUENCE:
+            mapping = template.get(button_id)
+            if not mapping:
+                continue
+            if self._apply_mapping_to_button(button_id, mapping):
+                applied += 1
+        return applied
+
+    def _maybe_save_quick_setup_profile(self, updated: int, total: int, skipped: int):
+        """Optionally save wizard results to a profile, otherwise post completion status."""
+        save_reply = QMessageBox.question(
+            self.main_window,
+            "Quick Setup Wizard",
+            "Save these quick setup mappings to a profile now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if save_reply != QMessageBox.StandardButton.Yes:
+            self.main_window.set_status(
+                f"Quick setup complete: updated {updated}/{total}, skipped {skipped}"
+            )
+            return
+
+        suggested_name = self.current_profile_name or "quick_setup"
+        profile_name, ok = QInputDialog.getText(
+            self.main_window,
+            "Save Quick Setup Profile",
+            "Profile name:",
+            text=suggested_name,
+        )
+        profile_name = profile_name.strip()
+        if not ok or not profile_name:
+            self.main_window.set_status(
+                f"Quick setup complete: updated {updated}/{total}, skipped {skipped}"
+            )
+            return
+
+        self._save_profile(profile_name)
+        self.main_window.set_status(
+            f"Quick setup saved to profile '{profile_name}' ({updated}/{total} updated, {skipped} skipped)"
+        )
+
+    def _build_device_diagnostics_report(self) -> tuple[str, list[str]]:
+        """Build human-readable diagnostics details and list of available backends."""
+        prefer_libusb = bool(getattr(self.device, "_use_libusb", False))
+        probe_order = "libusb -> hidraw" if prefer_libusb else "hidraw -> libusb"
+        hidraw_info = find_g13_hidraw_info()
+        diagnostics = probe_device_backends(use_libusb=prefer_libusb)
+
+        lines = ["G13 diagnostics", f"Probe order: {probe_order}"]
+        if hidraw_info:
+            lines.append(f"Hidraw path: {hidraw_info['path']}")
+            access = []
+            access.append("r" if hidraw_info.get("readable") else "-")
+            access.append("w" if hidraw_info.get("writable") else "-")
+            source = hidraw_info.get("detection_source") or "unknown"
+            lines.append(f"Hidraw access: {''.join(access)} (detected via {source})")
+        else:
+            lines.append("Hidraw path: not found")
+
+        ok_backends = []
+        for result in diagnostics:
+            backend = result.get("backend", "unknown")
+            if result.get("ok"):
+                ok_backends.append(backend)
+                lines.append(f"{backend}: OK")
+            else:
+                error = result.get("error") or "unknown error"
+                lines.append(f"{backend}: FAILED ({error})")
+
+        if ok_backends:
+            lines.append("")
+            lines.append("At least one backend can open the device.")
+            lines.append("If button input still fails, try libusb mode with sudo.")
+            lines.append("Example: sudo g13-linux-gui --libusb")
+            return "\n".join(lines), ok_backends
+
+        lines.append("")
+        lines.append("No backend could open the device.")
+        lines.append("Checklist:")
+        lines.append("1) Confirm the G13 is connected and re-plug it.")
+        lines.append("2) Install/reload udev rules:")
+        lines.append("   sudo cp udev/99-logitech-g13.rules /etc/udev/rules.d/")
+        lines.append("   sudo udevadm control --reload-rules && sudo udevadm trigger")
+        lines.append("3) Try libusb mode with elevated permissions:")
+        lines.append("   sudo g13-linux-gui --libusb")
+        lines.append("4) From terminal, run: g13-linux doctor")
+        return "\n".join(lines), ok_backends
+
+    def _open_setup_assistant(self, update_status: bool):
+        """Open setup assistant dialog and optionally post status summary."""
+        details, ok_backends = self._build_device_diagnostics_report()
+        parent = self.main_window if isinstance(self.main_window, QWidget) else None
+        dialog = SetupAssistantDialog(
+            diagnostics_text=details,
+            has_available_backend=bool(ok_backends),
+            parent=parent,
+        )
+        dialog.exec()
+
+        if not update_status:
+            return
+
+        if ok_backends:
+            self.main_window.set_status(
+                f"Diagnostics complete: available backend(s): {', '.join(ok_backends)}"
+            )
+        else:
+            self.main_window.set_status("Diagnostics complete: no available backend")
+
+    def _show_setup_assistant_if_needed(self):
+        """Show setup assistant once per session after initial connection failure."""
+        if self._setup_assistant_shown:
+            return
+        self._setup_assistant_shown = True
+        self._open_setup_assistant(update_status=False)
+
     @pyqtSlot(str)
     def _load_profile(self, profile_name: str):
         """Load a profile and update UI"""
@@ -246,15 +612,19 @@ class ApplicationController(QObject):
                 self.main_window.button_mapper.set_button_mapping(button_id, key_name)
 
             # Load joystick configuration
-            self.current_joystick_config = profile.joystick.copy() if profile.joystick else {}
-            if self.current_joystick_config:
-                config = JoystickConfig.from_dict(self.current_joystick_config)
+            self.current_joystick_config = self._default_joystick_config()
+            raw_joystick_config = profile.joystick.copy() if profile.joystick else {}
+            if raw_joystick_config:
+                config = JoystickConfig.from_dict(raw_joystick_config)
+                # Normalize legacy profile formats into canonical joystick schema.
+                self.current_joystick_config = config.to_dict()
                 self.joystick_handler.set_config(config)
                 # Start joystick handler if not disabled
                 if config.mode.value != "disabled":
                     self.joystick_handler.start()
-                # Update joystick settings UI
-                self.main_window.joystick_widget.set_config(self.current_joystick_config)
+            # Update joystick settings UI
+            self.main_window.joystick_widget.set_config(self.current_joystick_config)
+            self._refresh_session_summary()
 
             self.main_window.set_status(f"Loaded profile: {profile_name}")
 
@@ -277,7 +647,13 @@ class ApplicationController(QObject):
                 profile = self.profile_manager.create_profile(profile_name)
 
             profile.mappings = self.current_mappings.copy()
+            if self.current_joystick_config:
+                profile.joystick = self.current_joystick_config.copy()
+            elif not getattr(profile, "joystick", None):
+                profile.joystick = self._default_joystick_config()
             self.profile_manager.save_profile(profile, profile_name)
+            self.current_profile_name = profile_name
+            self._refresh_session_summary()
 
             # Refresh profile list
             profiles = self.profile_manager.list_profiles()
@@ -339,16 +715,65 @@ class ApplicationController(QObject):
         if dialog.exec():
             key_name = dialog.selected_key
             if key_name:
-                self.current_mappings[button_id] = key_name
-                self.main_window.button_mapper.set_button_mapping(button_id, key_name)
-                # Format status message for combos vs simple keys
-                if isinstance(key_name, dict):
-                    keys = key_name.get("keys", [])
-                    label = key_name.get("label", "")
-                    display = label if label else "+".join(k.replace("KEY_", "") for k in keys)
-                    self.main_window.set_status(f"Mapped {button_id} to {display}")
-                else:
-                    self.main_window.set_status(f"Mapped {button_id} to {key_name}")
+                self._apply_mapping_to_button(button_id, key_name)
+
+    def _apply_mapping_to_button(self, button_id: str, key_name: str | dict) -> bool:
+        """Apply selected mapping payload to a button. Returns True when applied."""
+        if key_name == "KEY_RESERVED":
+            self._clear_button_mapping(button_id)
+            return True
+
+        conflict_buttons = self._find_conflicting_buttons(button_id, key_name)
+        status_suffix = ""
+        if conflict_buttons:
+            conflict_list = ", ".join(conflict_buttons)
+            display = self._format_mapping_label(key_name)
+            choice = QMessageBox.question(
+                self.main_window,
+                "Binding Already In Use",
+                (
+                    f"{display} is already mapped to: {conflict_list}\n\n"
+                    f"Yes: move binding to {button_id} and clear previous button(s).\n"
+                    "No: keep duplicate mapping.\n"
+                    "Cancel: keep existing mappings."
+                ),
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+
+            if choice == QMessageBox.StandardButton.Cancel:
+                self.main_window.set_status(f"Mapping for {button_id} unchanged")
+                return False
+
+            if choice == QMessageBox.StandardButton.Yes:
+                for conflict_button_id in conflict_buttons:
+                    self.current_mappings.pop(conflict_button_id, None)
+                    self.main_window.button_mapper.set_button_mapping(conflict_button_id, None)
+                status_suffix = f" (moved from {conflict_list})"
+            else:
+                status_suffix = f" (also on {conflict_list})"
+
+        self.current_mappings[button_id] = key_name
+        self.main_window.button_mapper.set_button_mapping(button_id, key_name)
+        display = self._format_mapping_label(key_name)
+        self._refresh_session_summary()
+        self.main_window.set_status(f"Mapped {button_id} to {display}{status_suffix}")
+        return True
+
+    @pyqtSlot(str)
+    def _clear_button_mapping(self, button_id: str):
+        """Clear mapping for one G13 button."""
+        had_mapping = button_id in self.current_mappings
+        self.current_mappings.pop(button_id, None)
+        self.main_window.button_mapper.set_button_mapping(button_id, None)
+
+        if had_mapping:
+            self.main_window.set_status(f"Cleared mapping for {button_id}")
+        else:
+            self.main_window.set_status(f"{button_id} is already unbound")
+        self._refresh_session_summary()
 
     @pyqtSlot(str)
     def _update_lcd(self, text: str):
@@ -522,8 +947,8 @@ class ApplicationController(QObject):
     @pyqtSlot(dict)
     def _on_joystick_config_changed(self, config_dict: dict) -> None:
         """Handle joystick settings change from UI."""
-        self.current_joystick_config = config_dict
         config = JoystickConfig.from_dict(config_dict)
+        self.current_joystick_config = config.to_dict()
         self.joystick_handler.set_config(config)
 
         # Restart handler with new config
@@ -532,6 +957,7 @@ class ApplicationController(QObject):
             self.joystick_handler.start()
 
         mode_name = config.mode.value.capitalize()
+        self._refresh_session_summary()
         self.main_window.set_status(f"Joystick mode: {mode_name}")
 
     def _on_joystick_direction_change(self, direction: str) -> None:

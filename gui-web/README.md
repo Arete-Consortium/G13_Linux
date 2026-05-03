@@ -124,6 +124,27 @@ Profiles and macros are stored in:
 - `configs/profiles/*.json` — Key binding profiles
 - `configs/macros/*.json` — Macro definitions
 
+Joystick config in profile JSON should use:
+
+```json
+{
+  "joystick": {
+    "mode": "analog",
+    "deadzone": 20,
+    "sensitivity": 1.0,
+    "key_up": "KEY_UP",
+    "key_down": "KEY_DOWN",
+    "key_left": "KEY_LEFT",
+    "key_right": "KEY_RIGHT",
+    "allow_diagonals": true
+  }
+}
+```
+
+Legacy `mode: "directional"` profiles are still loaded, but saving from the GUI or API should use the canonical schema above.
+Migration examples: `docs/profile-migration.md` (project root).
+CLI helper: `g13-linux profile migrate --all --dry-run`
+
 ## Simulation Mode
 
 When no G13 hardware is detected, the backend runs in simulation mode:
@@ -131,3 +152,14 @@ When no G13 hardware is detected, the backend runs in simulation mode:
 - Button presses can be simulated via right-click
 - Profile/macro management is fully functional
 - Useful for development and testing
+
+## Hardware Detection Troubleshooting
+
+1. Check backend status:
+   - `curl http://127.0.0.1:8765/api/status`
+   - Confirm `"connected": true`
+2. Verify Linux can see the device:
+   - `lsusb | grep -i logitech`
+3. Ensure access permissions are applied:
+   - Install and reload `udev/99-logitech-g13.rules`
+4. Make sure no other app has exclusive access to the device.

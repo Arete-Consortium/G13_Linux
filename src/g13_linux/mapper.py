@@ -1,7 +1,29 @@
-from evdev import UInput
-from evdev import ecodes as e
+import logging
+
+try:
+    from evdev import UInput
+    from evdev import ecodes as e
+except Exception:  # pragma: no cover - exercised on non-Linux/dev hosts
+    UInput = None
+    e = None
 
 from g13_linux.gui.models.event_decoder import EventDecoder
+
+logger = logging.getLogger(__name__)
+
+
+class _NoopUInput:
+    """Fallback UInput adapter when evdev is unavailable."""
+
+    def write(self, *args, **kwargs):
+        del args, kwargs
+        return None
+
+    def syn(self):
+        return None
+
+    def close(self):
+        return None
 
 
 class G13Mapper:
@@ -12,7 +34,12 @@ class G13Mapper:
     """
 
     def __init__(self):
-        self.ui = UInput()
+        self._evdev_available = UInput is not None and e is not None
+        if self._evdev_available:
+            self.ui = UInput()
+        else:
+            self.ui = _NoopUInput()
+            logger.warning("evdev unavailable; G13Mapper key injection disabled on this host")
         # button_id (str) -> list of evdev keycodes (for combos)
         self.button_map: dict[str, list[int]] = {}
         # Decoder for raw HID reports
@@ -41,7 +68,7 @@ class G13Mapper:
         """Parse a mapping entry into a list of keycodes."""
         if isinstance(mapping, str):
             # Simple format: 'KEY_1'
-            if hasattr(e, mapping):
+            if e and hasattr(e, mapping):
                 return [getattr(e, mapping)]
             return []
 
@@ -50,7 +77,7 @@ class G13Mapper:
             keys = mapping.get("keys", [])
             keycodes = []
             for key_name in keys:
-                if hasattr(e, key_name):
+                if e and hasattr(e, key_name):
                     keycodes.append(getattr(e, key_name))
             return keycodes
 
@@ -64,6 +91,8 @@ class G13Mapper:
         and release all keys in reverse order on release.
         """
         if button_id not in self.button_map:
+            return
+        if not self._evdev_available:
             return
 
         keycodes = self.button_map[button_id]
@@ -82,6 +111,8 @@ class G13Mapper:
 
     def send_key(self, keycode):
         """Emit a single key press + release."""
+        if not self._evdev_available:
+            return
         self.ui.write(e.EV_KEY, keycode, 1)
         self.ui.write(e.EV_KEY, keycode, 0)
         self.ui.syn()

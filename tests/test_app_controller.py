@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PyQt6.QtWidgets import QMessageBox
 
 from g13_linux.gui.controllers.app_controller import ApplicationController
 from g13_linux.gui.models.macro_recorder import RecorderState
@@ -22,6 +23,7 @@ def mock_main_window():
     # Button mapper
     window.button_mapper = MagicMock()
     window.button_mapper.button_clicked = MagicMock()
+    window.button_mapper.button_unbind_requested = MagicMock()
 
     # Hardware widget
     window.hardware_widget = MagicMock()
@@ -36,7 +38,20 @@ def mock_main_window():
     window.macro_widget = MagicMock()
     window.macro_widget.macro_saved = MagicMock()
 
+    # Session summary bar updater
+    window.set_session_summary = MagicMock()
+    window.diagnostics_requested = MagicMock()
+    window.quick_setup_requested = MagicMock()
+
     return window
+
+
+@pytest.fixture(autouse=True)
+def mock_setup_assistant_dialog():
+    """Prevent real Qt dialog creation in non-Qt tests."""
+    with patch("g13_linux.gui.controllers.app_controller.SetupAssistantDialog") as mock_dialog_cls:
+        mock_dialog_cls.return_value.exec.return_value = 0
+        yield mock_dialog_cls
 
 
 @pytest.fixture
@@ -175,10 +190,37 @@ class TestApplicationControllerStart:
         mock_dependencies["device"].connect.return_value = False
         mock_dependencies["profile_mgr"].list_profiles.return_value = []
 
-        controller = ApplicationController(mock_main_window)
-        controller.start()
+        with patch("g13_linux.gui.controllers.app_controller.SetupAssistantDialog"):
+            controller = ApplicationController(mock_main_window)
+            controller.start()
 
         mock_main_window.set_status.assert_any_call("No G13 device found")
+
+    def test_start_not_connected_opens_setup_assistant_once(
+        self, mock_main_window, mock_dependencies
+    ):
+        """Initial connection failure should open setup assistant only once per controller."""
+        mock_dependencies["device"].connect.return_value = False
+        mock_dependencies["profile_mgr"].list_profiles.return_value = []
+
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.probe_device_backends",
+                return_value=[{"backend": "hidraw", "ok": False, "error": "Permission denied"}],
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.find_g13_hidraw_info", return_value=None
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.SetupAssistantDialog"
+            ) as mock_dialog_cls,
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller.start()
+            controller.start()
+
+        mock_dialog_cls.assert_called_once()
+        mock_dialog_cls.return_value.exec.assert_called_once()
 
     def test_start_initializes_hardware(self, mock_main_window, mock_dependencies):
         """Test start initializes hardware controller."""
@@ -260,6 +302,62 @@ class TestApplicationControllerDeviceEvents:
         captured = capsys.readouterr()
         assert "ERROR: Test error message" in captured.out
 
+    def test_run_device_diagnostics_success(self, mock_main_window, mock_dependencies):
+        """Diagnostics should report available backends with info dialog."""
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.find_g13_hidraw_info",
+                return_value={
+                    "path": "/dev/hidraw2",
+                    "readable": True,
+                    "writable": True,
+                    "detection_source": "uevent",
+                },
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.probe_device_backends",
+                return_value=[
+                    {"backend": "hidraw", "ok": True, "error": None},
+                    {"backend": "libusb", "ok": False, "error": "pyusb not installed"},
+                ],
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.SetupAssistantDialog"
+            ) as mock_dialog_cls,
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller._run_device_diagnostics()
+
+        mock_dialog_cls.assert_called_once()
+        assert "hidraw: OK" in mock_dialog_cls.call_args.kwargs["diagnostics_text"]
+        mock_main_window.set_status.assert_any_call(
+            "Diagnostics complete: available backend(s): hidraw"
+        )
+
+    def test_run_device_diagnostics_failure(self, mock_main_window, mock_dependencies):
+        """Diagnostics should show checklist and warning when all backends fail."""
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.find_g13_hidraw_info", return_value=None
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.probe_device_backends",
+                return_value=[
+                    {"backend": "hidraw", "ok": False, "error": "Permission denied"},
+                    {"backend": "libusb", "ok": False, "error": "G13 not found"},
+                ],
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.SetupAssistantDialog"
+            ) as mock_dialog_cls,
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller._run_device_diagnostics()
+
+        mock_dialog_cls.assert_called_once()
+        assert "Checklist:" in mock_dialog_cls.call_args.kwargs["diagnostics_text"]
+        mock_main_window.set_status.assert_any_call("Diagnostics complete: no available backend")
+
 
 class TestApplicationControllerProfiles:
     """Tests for profile management."""
@@ -330,6 +428,29 @@ class TestApplicationControllerProfiles:
         mock_dependencies["profile_mgr"].load_profile.assert_called_with("existing")
         mock_dependencies["profile_mgr"].save_profile.assert_called()
 
+    def test_save_profile_persists_joystick_config(self, mock_main_window, mock_dependencies):
+        """Test save profile writes joystick config to profile data."""
+        mock_dependencies["profile_mgr"].profile_exists.return_value = False
+        mock_profile = MagicMock()
+        mock_dependencies["profile_mgr"].create_profile.return_value = mock_profile
+        mock_dependencies["profile_mgr"].list_profiles.return_value = ["new_profile"]
+
+        controller = ApplicationController(mock_main_window)
+        controller.current_mappings = {"G1": "x"}
+        controller.current_joystick_config = {
+            "mode": "digital",
+            "deadzone": 25,
+            "sensitivity": 1.2,
+            "key_up": "KEY_W",
+            "key_down": "KEY_S",
+            "key_left": "KEY_A",
+            "key_right": "KEY_D",
+            "allow_diagonals": False,
+        }
+        controller._save_profile("new_profile")
+
+        assert mock_profile.joystick == controller.current_joystick_config
+
     def test_delete_profile(self, mock_main_window, mock_dependencies):
         """Test deleting a profile."""
         mock_dependencies["profile_mgr"].list_profiles.return_value = []
@@ -343,6 +464,16 @@ class TestApplicationControllerProfiles:
 
 class TestApplicationControllerButtonMapping:
     """Tests for button mapping."""
+
+    def test_is_bound_mapping_helper(self, mock_main_window, mock_dependencies):
+        """Bound mapping helper should classify legacy/unbound values correctly."""
+        controller = ApplicationController(mock_main_window)
+
+        assert controller._is_bound_mapping("KEY_A") is True
+        assert controller._is_bound_mapping({"keys": ["KEY_LEFTCTRL", "KEY_B"]}) is True
+        assert controller._is_bound_mapping({"keys": ["KEY_RESERVED"]}) is False
+        assert controller._is_bound_mapping("KEY_RESERVED") is False
+        assert controller._is_bound_mapping(None) is False
 
     def test_assign_key_to_button(self, mock_main_window, mock_dependencies):
         """Test assigning a key to a button."""
@@ -358,6 +489,7 @@ class TestApplicationControllerButtonMapping:
             assert controller.current_mappings["G5"] == "space"
             mock_main_window.button_mapper.set_button_mapping.assert_called_with("G5", "space")
             mock_main_window.set_status.assert_called_with("Mapped G5 to space")
+            mock_main_window.set_session_summary.assert_called_with(None, 1, "analog")
 
     def test_assign_key_cancelled(self, mock_main_window, mock_dependencies):
         """Test cancelling key assignment."""
@@ -370,6 +502,330 @@ class TestApplicationControllerButtonMapping:
             controller._assign_key_to_button("G5")
 
             assert "G5" not in controller.current_mappings
+
+    def test_assign_key_status_strips_key_prefix(self, mock_main_window, mock_dependencies):
+        """Status should display readable key names without KEY_ prefix."""
+        with patch("g13_linux.gui.controllers.app_controller.KeySelectorDialog") as mock_dialog:
+            mock_dialog_instance = MagicMock()
+            mock_dialog_instance.exec.return_value = True
+            mock_dialog_instance.selected_key = "KEY_SPACE"
+            mock_dialog.return_value = mock_dialog_instance
+
+            controller = ApplicationController(mock_main_window)
+            controller._assign_key_to_button("G5")
+
+            mock_main_window.set_status.assert_called_with("Mapped G5 to SPACE")
+
+    def test_assign_key_reserved_clears_mapping(self, mock_main_window, mock_dependencies):
+        """KEY_RESERVED from selector should clear existing mapping."""
+        with patch("g13_linux.gui.controllers.app_controller.KeySelectorDialog") as mock_dialog:
+            mock_dialog_instance = MagicMock()
+            mock_dialog_instance.exec.return_value = True
+            mock_dialog_instance.selected_key = "KEY_RESERVED"
+            mock_dialog.return_value = mock_dialog_instance
+
+            controller = ApplicationController(mock_main_window)
+            controller.current_mappings["G5"] = "KEY_F1"
+            controller._assign_key_to_button("G5")
+
+            assert "G5" not in controller.current_mappings
+            mock_main_window.button_mapper.set_button_mapping.assert_called_with("G5", None)
+            mock_main_window.set_status.assert_called_with("Cleared mapping for G5")
+
+    def test_assign_key_conflict_move_clears_previous_button(
+        self, mock_main_window, mock_dependencies
+    ):
+        """Choosing move on conflict should clear old binding and keep one owner."""
+        with (
+            patch("g13_linux.gui.controllers.app_controller.KeySelectorDialog") as mock_dialog,
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ) as mock_question,
+        ):
+            mock_dialog_instance = MagicMock()
+            mock_dialog_instance.exec.return_value = True
+            mock_dialog_instance.selected_key = "KEY_SPACE"
+            mock_dialog.return_value = mock_dialog_instance
+
+            controller = ApplicationController(mock_main_window)
+            controller.current_mappings = {"G3": "KEY_SPACE", "G5": "KEY_F1"}
+            controller._assign_key_to_button("G5")
+
+            assert "G3" not in controller.current_mappings
+            assert controller.current_mappings["G5"] == "KEY_SPACE"
+            mock_question.assert_called_once()
+            mock_main_window.button_mapper.set_button_mapping.assert_any_call("G3", None)
+            mock_main_window.button_mapper.set_button_mapping.assert_any_call("G5", "KEY_SPACE")
+            mock_main_window.set_status.assert_called_with("Mapped G5 to SPACE (moved from G3)")
+
+    def test_assign_key_conflict_keep_duplicate(self, mock_main_window, mock_dependencies):
+        """Choosing keep duplicate should preserve existing owner and map target too."""
+        with (
+            patch("g13_linux.gui.controllers.app_controller.KeySelectorDialog") as mock_dialog,
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.No,
+            ) as mock_question,
+        ):
+            mock_dialog_instance = MagicMock()
+            mock_dialog_instance.exec.return_value = True
+            mock_dialog_instance.selected_key = "KEY_SPACE"
+            mock_dialog.return_value = mock_dialog_instance
+
+            controller = ApplicationController(mock_main_window)
+            controller.current_mappings = {"G3": "KEY_SPACE"}
+            controller._assign_key_to_button("G5")
+
+            assert controller.current_mappings["G3"] == "KEY_SPACE"
+            assert controller.current_mappings["G5"] == "KEY_SPACE"
+            mock_question.assert_called_once()
+            mock_main_window.set_status.assert_called_with("Mapped G5 to SPACE (also on G3)")
+
+    def test_assign_key_conflict_cancel_keeps_existing_mapping(
+        self, mock_main_window, mock_dependencies
+    ):
+        """Canceling conflict prompt should leave mappings unchanged."""
+        with (
+            patch("g13_linux.gui.controllers.app_controller.KeySelectorDialog") as mock_dialog,
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Cancel,
+            ) as mock_question,
+        ):
+            mock_dialog_instance = MagicMock()
+            mock_dialog_instance.exec.return_value = True
+            mock_dialog_instance.selected_key = "KEY_SPACE"
+            mock_dialog.return_value = mock_dialog_instance
+
+            controller = ApplicationController(mock_main_window)
+            controller.current_mappings = {"G3": "KEY_SPACE", "G5": "KEY_F2"}
+            controller._assign_key_to_button("G5")
+
+            assert controller.current_mappings["G3"] == "KEY_SPACE"
+            assert controller.current_mappings["G5"] == "KEY_F2"
+            mock_question.assert_called_once()
+            mock_main_window.set_status.assert_called_with("Mapping for G5 unchanged")
+
+    def test_clear_button_mapping(self, mock_main_window, mock_dependencies):
+        """Direct clear request removes mapping and updates UI."""
+        controller = ApplicationController(mock_main_window)
+        controller.current_mappings["G7"] = "KEY_F2"
+
+        controller._clear_button_mapping("G7")
+
+        assert "G7" not in controller.current_mappings
+        mock_main_window.button_mapper.set_button_mapping.assert_called_with("G7", None)
+        mock_main_window.set_status.assert_called_with("Cleared mapping for G7")
+        mock_main_window.set_session_summary.assert_called_with(None, 0, "analog")
+
+    def test_clear_button_mapping_when_already_unbound(self, mock_main_window, mock_dependencies):
+        """Clearing unbound key should keep map empty and show helpful status."""
+        controller = ApplicationController(mock_main_window)
+
+        controller._clear_button_mapping("G22")
+
+        assert "G22" not in controller.current_mappings
+        mock_main_window.button_mapper.set_button_mapping.assert_called_with("G22", None)
+        mock_main_window.set_status.assert_called_with("G22 is already unbound")
+        mock_main_window.set_session_summary.assert_called_with(None, 0, "analog")
+
+
+class TestApplicationControllerQuickSetup:
+    """Tests for guided quick setup wizard."""
+
+    def test_quick_setup_wizard_cancelled_before_start(self, mock_main_window, mock_dependencies):
+        """Canceling start prompt should leave mappings unchanged."""
+        with patch(
+            "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Cancel,
+        ) as mock_question:
+            controller = ApplicationController(mock_main_window)
+            controller._QUICK_BIND_SEQUENCE = ("G1", "G2")
+            controller._run_quick_binding_wizard()
+
+        assert controller.current_mappings == {}
+        mock_question.assert_called_once()
+        mock_main_window.set_status.assert_called_with("Quick setup canceled")
+
+    def test_quick_setup_wizard_applies_bindings(self, mock_main_window, mock_dependencies):
+        """Wizard should apply selected bindings and report completion summary."""
+        first_dialog = MagicMock()
+        first_dialog.exec.return_value = True
+        first_dialog.selected_key = "KEY_1"
+
+        second_dialog = MagicMock()
+        second_dialog.exec.return_value = True
+        second_dialog.selected_key = "KEY_2"
+
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                side_effect=[QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No],
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.QInputDialog.getItem",
+                return_value=(ApplicationController._QUICK_SETUP_MANUAL_TEMPLATE, True),
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.KeySelectorDialog",
+                side_effect=[first_dialog, second_dialog],
+            ) as mock_dialog_cls,
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller._QUICK_BIND_SEQUENCE = ("G1", "G2")
+            controller._run_quick_binding_wizard()
+
+        assert controller.current_mappings["G1"] == "KEY_1"
+        assert controller.current_mappings["G2"] == "KEY_2"
+        assert mock_dialog_cls.call_count == 2
+        mock_main_window.set_status.assert_any_call("Quick setup complete: updated 2/2, skipped 0")
+
+    def test_quick_setup_wizard_stop_after_cancelled_step(
+        self, mock_main_window, mock_dependencies
+    ):
+        """Canceling a step and choosing stop should end wizard immediately."""
+        first_dialog = MagicMock()
+        first_dialog.exec.return_value = False
+
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                side_effect=[QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No],
+            ) as mock_question,
+            patch(
+                "g13_linux.gui.controllers.app_controller.QInputDialog.getItem",
+                return_value=(ApplicationController._QUICK_SETUP_MANUAL_TEMPLATE, True),
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.KeySelectorDialog",
+                return_value=first_dialog,
+            ),
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller._QUICK_BIND_SEQUENCE = ("G1", "G2")
+            controller._run_quick_binding_wizard()
+
+        assert controller.current_mappings == {}
+        assert mock_question.call_count == 2
+        mock_main_window.set_status.assert_any_call("Quick setup stopped: updated 0/2, skipped 0")
+
+    def test_quick_setup_wizard_skip_step_and_continue(self, mock_main_window, mock_dependencies):
+        """Choosing skip should continue wizard and map later steps."""
+        first_dialog = MagicMock()
+        first_dialog.exec.return_value = False
+
+        second_dialog = MagicMock()
+        second_dialog.exec.return_value = True
+        second_dialog.selected_key = "KEY_2"
+
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                side_effect=[
+                    QMessageBox.StandardButton.Yes,
+                    QMessageBox.StandardButton.Yes,
+                    QMessageBox.StandardButton.No,
+                ],
+            ) as mock_question,
+            patch(
+                "g13_linux.gui.controllers.app_controller.QInputDialog.getItem",
+                return_value=(ApplicationController._QUICK_SETUP_MANUAL_TEMPLATE, True),
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.KeySelectorDialog",
+                side_effect=[first_dialog, second_dialog],
+            ),
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller._QUICK_BIND_SEQUENCE = ("G1", "G2")
+            controller._run_quick_binding_wizard()
+
+        assert "G1" not in controller.current_mappings
+        assert controller.current_mappings["G2"] == "KEY_2"
+        assert mock_question.call_count == 3
+        mock_main_window.set_status.assert_any_call("Quick setup complete: updated 1/2, skipped 1")
+
+    def test_quick_setup_wizard_template_applies_without_review(
+        self, mock_main_window, mock_dependencies
+    ):
+        """Template flow can finish immediately without per-button review dialogs."""
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                side_effect=[
+                    QMessageBox.StandardButton.Yes,  # Start wizard
+                    QMessageBox.StandardButton.No,  # Skip guided review after template
+                    QMessageBox.StandardButton.No,  # Don't save profile
+                ],
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.QInputDialog.getItem",
+                return_value=("MMO Starter (1-8 Keys)", True),
+            ),
+            patch("g13_linux.gui.controllers.app_controller.KeySelectorDialog") as mock_dialog_cls,
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller._QUICK_BIND_SEQUENCE = ("G1", "G2")
+            controller._run_quick_binding_wizard()
+
+        assert controller.current_mappings["G1"] == "KEY_1"
+        assert controller.current_mappings["G2"] == "KEY_2"
+        mock_dialog_cls.assert_not_called()
+        mock_main_window.set_status.assert_any_call("Quick setup complete: updated 2/2, skipped 0")
+
+    def test_quick_setup_wizard_template_then_save_profile(
+        self, mock_main_window, mock_dependencies
+    ):
+        """Wizard can save template-driven setup into a named profile."""
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                side_effect=[
+                    QMessageBox.StandardButton.Yes,  # Start wizard
+                    QMessageBox.StandardButton.No,  # Skip guided review after template
+                    QMessageBox.StandardButton.Yes,  # Save profile
+                ],
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.QInputDialog.getItem",
+                return_value=("MMO Starter (1-8 Keys)", True),
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.QInputDialog.getText",
+                return_value=("wizard_profile", True),
+            ),
+            patch.object(ApplicationController, "_save_profile") as mock_save_profile,
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller._QUICK_BIND_SEQUENCE = ("G1",)
+            controller._run_quick_binding_wizard()
+
+        mock_save_profile.assert_called_once_with("wizard_profile")
+        mock_main_window.set_status.assert_any_call(
+            "Quick setup saved to profile 'wizard_profile' (1/1 updated, 0 skipped)"
+        )
+
+    def test_quick_setup_wizard_canceled_template_selection(
+        self, mock_main_window, mock_dependencies
+    ):
+        """Canceling template picker should abort wizard cleanly."""
+        with (
+            patch(
+                "g13_linux.gui.controllers.app_controller.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ),
+            patch(
+                "g13_linux.gui.controllers.app_controller.QInputDialog.getItem",
+                return_value=("", False),
+            ),
+        ):
+            controller = ApplicationController(mock_main_window)
+            controller._QUICK_BIND_SEQUENCE = ("G1",)
+            controller._run_quick_binding_wizard()
+
+        assert controller.current_mappings == {}
+        mock_main_window.set_status.assert_any_call("Quick setup canceled")
 
 
 class TestApplicationControllerHardware:

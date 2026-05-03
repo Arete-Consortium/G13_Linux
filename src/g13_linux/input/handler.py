@@ -74,6 +74,23 @@ class InputHandler:
             self._thread = None
         logger.info("Input handler stopped")
 
+    def process_report(self, data: bytes | list[int]):
+        """
+        Process one raw report without reading from the device.
+
+        This allows a single external read loop (for example, the daemon)
+        to fan out each report to both mapper and navigation handling.
+        """
+        self._process_report(data)
+
+    def tick(self):
+        """
+        Advance repeat timers when no new report is available.
+
+        Useful when this handler is driven by an external polling loop.
+        """
+        self._check_stick_repeat()
+
     def _poll_loop(self):
         """Main polling loop."""
         while self._running:

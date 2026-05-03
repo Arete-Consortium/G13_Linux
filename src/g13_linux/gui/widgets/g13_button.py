@@ -8,7 +8,7 @@ Supports highlighting when physically pressed, bound state display, and tooltips
 try:
     from PyQt6.QtCore import Qt, pyqtSignal
     from PyQt6.QtGui import QCursor, QFont
-    from PyQt6.QtWidgets import QPushButton
+    from PyQt6.QtWidgets import QMenu, QPushButton
 except ImportError:  # pragma: no cover
     # Stub for development without PyQt6
     class QPushButton:  # type: ignore[no-redef]
@@ -24,6 +24,9 @@ except ImportError:  # pragma: no cover
 
     class QFont:  # type: ignore[no-redef]
         Bold = 75
+
+    class QMenu:  # type: ignore[no-redef]
+        pass
 
     def pyqtSignal(*args):  # type: ignore[no-redef]
         return None
@@ -108,6 +111,25 @@ class G13Button(QPushButton):
     """
 
     clicked_with_id = pyqtSignal(str)  # Emits button_id when clicked
+    unbind_requested = pyqtSignal(str)  # Emits button_id when unbind is requested
+    hover_changed = pyqtSignal(str, bool)  # Emits button_id + hover state
+
+    _DISPLAY_ALIASES = {
+        "LEFTCTRL": "LCTRL",
+        "RIGHTCTRL": "RCTRL",
+        "LEFTSHIFT": "LSHFT",
+        "RIGHTSHIFT": "RSHFT",
+        "LEFTALT": "LALT",
+        "RIGHTALT": "RALT",
+        "LEFTMETA": "LSUPR",
+        "RIGHTMETA": "RSUPR",
+        "BACKSPACE": "BSP",
+        "DELETE": "DEL",
+        "INSERT": "INS",
+        "PAGEUP": "PGUP",
+        "PAGEDOWN": "PGDN",
+        "ESCAPE": "ESC",
+    }
 
     def __init__(self, button_id: str, parent=None):
         super().__init__(button_id, parent)
@@ -170,16 +192,27 @@ class G13Button(QPushButton):
                 binding = label
             else:
                 keys = self.mapped_key.get("keys", [])
-                short_keys = [k.replace("KEY_", "") for k in keys]
+                short_keys = [self._compact_key_name(k) for k in keys if isinstance(k, str) and k]
+                if not short_keys:
+                    return ""
                 binding = "+".join(short_keys)
+                if len(binding) > 9 and len(short_keys) >= 2:
+                    compressed = [key[0] if len(key) > 1 else key for key in short_keys[:-1]]
+                    compressed.append(short_keys[-1][:3])
+                    binding = "+".join(compressed)
         else:
             # Simple key format
-            binding = self.mapped_key.replace("KEY_", "")
+            binding = self._compact_key_name(str(self.mapped_key))
 
         # Truncate long bindings
-        if len(binding) > 6:
-            return binding[:5] + "..."
+        if len(binding) > 9:
+            return binding[:8] + "…"
         return binding
+
+    def _compact_key_name(self, key_name: str) -> str:
+        """Return compact display token for KEY_* values."""
+        raw = key_name.replace("KEY_", "")
+        return self._DISPLAY_ALIASES.get(raw, raw)
 
     def _get_binding_full(self) -> str:
         """Get the full binding text for tooltip."""
@@ -202,13 +235,21 @@ class G13Button(QPushButton):
         binding = self._get_binding_display()
 
         if binding:
-            self.setText(f"{self.button_id}\n{binding}")
+            # Show mapped action only to reduce visual clutter in dense layouts.
+            self.setText(binding)
         else:
             self.setText(self.button_id)
 
         # Update tooltip
         full_binding = self._get_binding_full()
-        self.setToolTip(f"{self.button_id}: {full_binding}\nClick to configure")
+        self.setToolTip(
+            f"{self.button_id}: {full_binding}\nLeft-click to change binding\n"
+            "Right-click for binding actions"
+        )
+
+    def get_binding_summary(self) -> str:
+        """Return full binding summary for hover/details panels."""
+        return f"{self.button_id}: {self._get_binding_full()}"
 
     def _apply_style(self):
         """Apply appropriate style based on current state."""
@@ -233,6 +274,7 @@ class G13Button(QPushButton):
         self._is_hovered = True
         if not self.is_highlighted:
             self._apply_style()
+        self.hover_changed.emit(self.button_id, True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -240,9 +282,20 @@ class G13Button(QPushButton):
         self._is_hovered = False
         if not self.is_highlighted:
             self._apply_style()
+        self.hover_changed.emit(self.button_id, False)
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
         """Emit clicked_with_id signal."""
         self.clicked_with_id.emit(self.button_id)
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event):
+        """Show quick actions for this button."""
+        menu = QMenu(self)
+        clear_action = menu.addAction("Clear Binding")
+        clear_action.setEnabled(self._has_mapping())
+
+        selected_action = menu.exec(event.globalPos())
+        if selected_action == clear_action and self._has_mapping():
+            self.unbind_requested.emit(self.button_id)

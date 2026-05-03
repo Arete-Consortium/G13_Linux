@@ -1,6 +1,7 @@
 """Tests for CLI commands."""
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from g13_linux.cli import (
     COLOR_PRESETS,
     cmd_color,
+    cmd_doctor,
     cmd_lcd,
     cmd_profile,
     cmd_run,
@@ -102,6 +104,28 @@ class TestCmdRun:
             cmd_run(args)
 
         assert mock_mapper.handle_raw_report.call_count == 2
+
+    def test_cmd_run_full_mode_passes_libusb_flag(self):
+        """Full daemon mode should forward --libusb preference."""
+        mock_daemon = MagicMock()
+        with patch("g13_linux.daemon.G13Daemon", return_value=mock_daemon) as mock_daemon_cls:
+            args = MagicMock()
+            args.simple = False
+            args.no_server = False
+            args.server_host = "127.0.0.1"
+            args.server_port = 8765
+            args.static_dir = None
+            args.libusb = True
+            cmd_run(args)
+
+        mock_daemon_cls.assert_called_once_with(
+            enable_server=True,
+            server_host="127.0.0.1",
+            server_port=8765,
+            static_dir=None,
+            use_libusb=True,
+        )
+        mock_daemon.run.assert_called_once()
 
 
 class TestCmdLcd:
@@ -265,6 +289,64 @@ class TestCmdColor:
                 cmd_color(args)
 
             assert exc_info.value.code == 1
+
+
+class TestCmdDoctor:
+    """Tests for cmd_doctor command."""
+
+    def test_cmd_doctor_reports_success(self, capsys):
+        """Doctor should report success when any backend opens."""
+        with (
+            patch(
+                "g13_linux.device.find_g13_hidraw_info",
+                return_value={
+                    "path": "/dev/hidraw3",
+                    "readable": True,
+                    "writable": True,
+                    "detection_source": "uevent",
+                },
+            ),
+            patch(
+                "g13_linux.device.probe_device_backends",
+                return_value=[
+                    {"backend": "hidraw", "ok": True, "error": None},
+                    {"backend": "libusb", "ok": False, "error": "pyusb not installed"},
+                ],
+            ),
+        ):
+            args = MagicMock()
+            args.libusb_first = False
+            cmd_doctor(args)
+
+        captured = capsys.readouterr()
+        assert "G13 Linux Doctor" in captured.out
+        assert "Hidraw path: /dev/hidraw3" in captured.out
+        assert "Hidraw access: rw (detected via uevent)" in captured.out
+        assert "hidraw: OK" in captured.out
+        assert "Result: at least one backend can open the G13." in captured.out
+
+    def test_cmd_doctor_reports_failure_and_exits(self, capsys):
+        """Doctor should exit 1 when no backend can open device."""
+        with (
+            patch("g13_linux.device.find_g13_hidraw_info", return_value=None),
+            patch(
+                "g13_linux.device.probe_device_backends",
+                return_value=[
+                    {"backend": "hidraw", "ok": False, "error": "Permission denied"},
+                    {"backend": "libusb", "ok": False, "error": "G13 not found"},
+                ],
+            ),
+        ):
+            args = MagicMock()
+            args.libusb_first = True
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_doctor(args)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "Probe order: libusb -> hidraw" in captured.out
+        assert "hidraw: FAILED (Permission denied)" in captured.out
+        assert "Result: no backend could open the G13." in captured.out
 
 
 class TestCmdProfile:
@@ -442,6 +524,108 @@ class TestCmdProfile:
 
             assert exc_info.value.code == 1
 
+    def test_cmd_profile_migrate_single(self, tmp_path, capsys):
+        """Test profile migrate for a single profile."""
+        profile_path = tmp_path / "legacy.json"
+        profile_path.write_text("{}")
+
+        mock_pm = MagicMock()
+        mock_pm.profiles_dir = tmp_path
+
+        result = MagicMock()
+        result.error = None
+        result.changed = True
+        result.details = ["normalized joystick fields to canonical schema"]
+
+        with (
+            patch("g13_linux.gui.models.profile_manager.ProfileManager", return_value=mock_pm),
+            patch(
+                "g13_linux.profile_migration.migrate_profile_file", return_value=result
+            ) as mock_mig,
+        ):
+            args = MagicMock()
+            args.profile_cmd = "migrate"
+            args.name = "legacy"
+            args.all = False
+            args.dry_run = False
+            cmd_profile(args)
+
+        mock_mig.assert_called_once_with(profile_path, dry_run=False)
+        captured = capsys.readouterr()
+        assert "Migrated: legacy" in captured.out
+        assert "Migration complete: 1 migrated, 0 unchanged, 0 errors." in captured.out
+
+    def test_cmd_profile_migrate_all_dry_run(self, tmp_path, capsys):
+        """Test profile migrate --all in dry-run mode."""
+        (tmp_path / "legacy.json").write_text("{}")
+        (tmp_path / "modern.json").write_text("{}")
+
+        mock_pm = MagicMock()
+        mock_pm.profiles_dir = tmp_path
+
+        changed_result = MagicMock()
+        changed_result.error = None
+        changed_result.changed = True
+        changed_result.details = ["moved legacy joystick.click mapping to mappings.STICK"]
+
+        unchanged_result = MagicMock()
+        unchanged_result.error = None
+        unchanged_result.changed = False
+        unchanged_result.details = []
+
+        def fake_migrate(path: Path, dry_run: bool):
+            if path.stem == "legacy":
+                return changed_result
+            return unchanged_result
+
+        with (
+            patch("g13_linux.gui.models.profile_manager.ProfileManager", return_value=mock_pm),
+            patch("g13_linux.profile_migration.migrate_profile_file", side_effect=fake_migrate),
+        ):
+            args = MagicMock()
+            args.profile_cmd = "migrate"
+            args.name = None
+            args.all = True
+            args.dry_run = True
+            cmd_profile(args)
+
+        captured = capsys.readouterr()
+        assert "Would migrate: legacy" in captured.out
+        assert "No changes: modern" in captured.out
+        assert "Dry run complete: 1 to migrate, 1 unchanged, 0 errors." in captured.out
+
+    def test_cmd_profile_migrate_requires_name_or_all(self):
+        """Test profile migrate errors if no target is provided."""
+        mock_pm = MagicMock()
+
+        with patch("g13_linux.gui.models.profile_manager.ProfileManager", return_value=mock_pm):
+            args = MagicMock()
+            args.profile_cmd = "migrate"
+            args.name = None
+            args.all = False
+            args.dry_run = False
+
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_profile(args)
+
+            assert exc_info.value.code == 1
+
+    def test_cmd_profile_migrate_rejects_name_and_all(self):
+        """Test profile migrate errors if name and --all are both provided."""
+        mock_pm = MagicMock()
+
+        with patch("g13_linux.gui.models.profile_manager.ProfileManager", return_value=mock_pm):
+            args = MagicMock()
+            args.profile_cmd = "migrate"
+            args.name = "legacy"
+            args.all = True
+            args.dry_run = False
+
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_profile(args)
+
+            assert exc_info.value.code == 1
+
 
 class TestMain:
     """Tests for main() entry point."""
@@ -502,6 +686,46 @@ class TestMain:
                 main()
 
             mock_profile.assert_called_once()
+
+    def test_main_profile_migrate_command(self):
+        """Test main with profile migrate command."""
+        with (
+            patch.object(sys, "argv", ["g13-linux", "profile", "migrate", "--all", "--dry-run"]),
+            patch("g13_linux.cli.cmd_profile") as mock_profile,
+        ):
+            mock_profile.side_effect = SystemExit(0)
+
+            with pytest.raises(SystemExit):
+                main()
+
+            mock_profile.assert_called_once()
+
+    def test_main_doctor_command(self):
+        """Test main with doctor command."""
+        with (
+            patch.object(sys, "argv", ["g13-linux", "doctor"]),
+            patch("g13_linux.cli.cmd_doctor") as mock_doctor,
+        ):
+            mock_doctor.side_effect = SystemExit(0)
+
+            with pytest.raises(SystemExit):
+                main()
+
+            mock_doctor.assert_called_once()
+
+    def test_main_run_libusb_flag_sets_arg(self):
+        """main should parse run --libusb into cmd_run args."""
+        with (
+            patch.object(sys, "argv", ["g13-linux", "run", "--libusb"]),
+            patch("g13_linux.cli.cmd_run") as mock_run,
+        ):
+            mock_run.side_effect = SystemExit(0)
+
+            with pytest.raises(SystemExit):
+                main()
+
+            run_args = mock_run.call_args[0][0]
+            assert run_args.libusb is True
 
     def test_main_profile_no_subcommand(self, capsys):
         """Test main with profile but no subcommand."""

@@ -128,6 +128,8 @@ class AppProfilesWidget(QWidget):
     def _setup_ui(self):
         """Set up the UI layout."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
         # Header with enable toggle
         header = QHBoxLayout()
@@ -142,9 +144,15 @@ class AppProfilesWidget(QWidget):
         # Test button - shows current window info
         self.test_btn = QPushButton("Test Current Window")
         self.test_btn.clicked.connect(self._on_test_clicked)
+        self.test_btn.setToolTip("Show current window fields and which rule would match")
         header.addWidget(self.test_btn)
 
         layout.addLayout(header)
+
+        helper = QLabel("Rules run top-to-bottom. Keep specific app patterns above broader ones.")
+        helper.setWordWrap(True)
+        helper.setStyleSheet("color: #888;")
+        layout.addWidget(helper)
 
         # Status indicator
         self.status_label = QLabel()
@@ -158,6 +166,7 @@ class AppProfilesWidget(QWidget):
         self.rules_list = QListWidget()
         self.rules_list.setMinimumHeight(200)
         self.rules_list.itemDoubleClicked.connect(self._on_edit_rule)
+        self.rules_list.itemSelectionChanged.connect(self._update_rule_button_states)
         rules_layout.addWidget(self.rules_list)
 
         # Rule buttons
@@ -167,21 +176,21 @@ class AppProfilesWidget(QWidget):
         self.add_btn.clicked.connect(self._on_add_rule)
         btn_layout.addWidget(self.add_btn)
 
-        self.edit_btn = QPushButton("Edit")
+        self.edit_btn = QPushButton("Edit Selected")
         self.edit_btn.clicked.connect(self._on_edit_clicked)
         btn_layout.addWidget(self.edit_btn)
 
-        self.delete_btn = QPushButton("Delete")
+        self.delete_btn = QPushButton("Delete Selected")
         self.delete_btn.clicked.connect(self._on_delete_rule)
         btn_layout.addWidget(self.delete_btn)
 
         btn_layout.addStretch()
 
-        self.move_up_btn = QPushButton("▲ Up")
+        self.move_up_btn = QPushButton("Move Up")
         self.move_up_btn.clicked.connect(self._on_move_up)
         btn_layout.addWidget(self.move_up_btn)
 
-        self.move_down_btn = QPushButton("▼ Down")
+        self.move_down_btn = QPushButton("Move Down")
         self.move_down_btn.clicked.connect(self._on_move_down)
         btn_layout.addWidget(self.move_down_btn)
 
@@ -208,6 +217,7 @@ class AppProfilesWidget(QWidget):
         layout.addWidget(default_group)
 
         layout.addStretch()
+        self._update_rule_button_states()
 
     def _update_status(self):
         """Update the status label."""
@@ -230,10 +240,23 @@ class AppProfilesWidget(QWidget):
         for rule in self.rules_manager.rules:
             status = "✓" if rule.enabled else "○"
             item = QListWidgetItem(f"{status} {rule.name} → {rule.profile_name}")
+            item.setToolTip(
+                f"Pattern: {rule.pattern}\nMatch: {rule.match_type}\nEnabled: {rule.enabled}"
+            )
             item.setData(Qt.ItemDataRole.UserRole, rule)
             if not rule.enabled:
                 item.setForeground(Qt.GlobalColor.gray)
             self.rules_list.addItem(item)
+        self._update_rule_button_states()
+
+    def _update_rule_button_states(self):
+        """Enable/disable rule action buttons based on current selection."""
+        row = self.rules_list.currentRow()
+        has_selection = row >= 0
+        self.edit_btn.setEnabled(has_selection)
+        self.delete_btn.setEnabled(has_selection)
+        self.move_up_btn.setEnabled(has_selection and row > 0)
+        self.move_down_btn.setEnabled(has_selection and row < self.rules_list.count() - 1)
 
     def _on_enabled_toggled(self, enabled: bool):
         """Handle enable checkbox toggle."""

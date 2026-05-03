@@ -66,6 +66,26 @@ class TestJoystickConfig:
         config = JoystickConfig.from_dict({"mode": "invalid"})
         assert config.mode == JoystickMode.ANALOG  # Defaults to analog
 
+    def test_from_dict_legacy_directional_mode_alias(self):
+        config = JoystickConfig.from_dict({"mode": "directional"})
+        assert config.mode == JoystickMode.DIGITAL
+
+    def test_from_dict_legacy_directional_mapping_objects(self):
+        data = {
+            "mode": "directional",
+            "up": {"keys": ["KEY_W"], "label": "Up"},
+            "down": {"keys": ["KEY_S"], "label": "Down"},
+            "left": {"keys": ["KEY_LEFTALT", "KEY_LEFT"], "label": "Prev target"},
+            "right": {"keys": ["KEY_LEFTALT", "KEY_RIGHT"], "label": "Next target"},
+        }
+        config = JoystickConfig.from_dict(data)
+        assert config.mode == JoystickMode.DIGITAL
+        assert config.key_up == "KEY_W"
+        assert config.key_down == "KEY_S"
+        # Legacy combo mappings are reduced to a usable primary key
+        assert config.key_left == "KEY_LEFTALT"
+        assert config.key_right == "KEY_LEFTALT"
+
     def test_to_dict(self):
         config = JoystickConfig(
             mode=JoystickMode.DIGITAL,

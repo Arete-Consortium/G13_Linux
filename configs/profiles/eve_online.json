@@ -158,6 +158,12 @@
         "KEY_LEFTALT"
       ],
       "label": "Mode 3"
+    },
+    "STICK": {
+      "keys": [
+        "KEY_LEFTCTRL"
+      ],
+      "label": "Ctrl modifier"
     }
   },
   "lcd": {
@@ -169,38 +175,13 @@
     "brightness": 80
   },
   "joystick": {
-    "mode": "directional",
-    "up": {
-      "keys": [
-        "KEY_UP"
-      ],
-      "label": "Toggle alts"
-    },
-    "down": {
-      "keys": [
-        "KEY_DOWN"
-      ],
-      "label": "EVE-O Preview"
-    },
-    "left": {
-      "keys": [
-        "KEY_LEFTALT",
-        "KEY_LEFT"
-      ],
-      "label": "Prev target"
-    },
-    "right": {
-      "keys": [
-        "KEY_LEFTALT",
-        "KEY_RIGHT"
-      ],
-      "label": "Next target"
-    },
-    "click": {
-      "keys": [
-        "KEY_LEFTCTRL"
-      ],
-      "label": "Ctrl modifier"
-    }
+    "mode": "digital",
+    "deadzone": 20,
+    "sensitivity": 1.0,
+    "key_up": "KEY_UP",
+    "key_down": "KEY_DOWN",
+    "key_left": "KEY_LEFT",
+    "key_right": "KEY_RIGHT",
+    "allow_diagonals": true
   }
 }

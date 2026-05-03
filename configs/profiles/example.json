@@ -36,5 +36,15 @@
   "backlight": {
     "color": "#FF0000",
     "brightness": 100
+  },
+  "joystick": {
+    "mode": "analog",
+    "deadzone": 20,
+    "sensitivity": 1.0,
+    "key_up": "KEY_UP",
+    "key_down": "KEY_DOWN",
+    "key_left": "KEY_LEFT",
+    "key_right": "KEY_RIGHT",
+    "allow_diagonals": true
   }
 }
