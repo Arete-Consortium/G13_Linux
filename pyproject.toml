@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "g13-linux"
-version = "1.7.0"
+version = "1.7.1"
 description = "Logitech G13 Linux driver with macro support, RGB control, and LCD display management"
 readme = "README.md"
 license = "MIT"

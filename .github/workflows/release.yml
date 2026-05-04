@@ -62,11 +62,16 @@ jobs:
         # Runs --version against the just-built AppImage to catch dynamic-linker
         # regressions (missing libpython, etc.) before publishing. Fails the job
         # — and therefore the release — if the AppImage can't even start.
+        #
+        # Uses --appimage-extract-and-run because GitHub Actions ubuntu-latest
+        # runners don't have libfuse2 installed by default. This flag extracts
+        # the AppImage to a temp dir and runs from there, bypassing FUSE
+        # entirely. End users with libfuse2 installed run the AppImage directly.
         run: |
           set -euxo pipefail
           chmod +x dist/*.AppImage
           EXPECTED_VERSION="${GITHUB_REF#refs/tags/v}"
-          OUTPUT=$(./dist/*.AppImage --version 2>&1)
+          OUTPUT=$(./dist/*.AppImage --appimage-extract-and-run --version 2>&1)
           echo "AppImage --version output: ${OUTPUT}"
           if ! echo "${OUTPUT}" | grep -q "${EXPECTED_VERSION}"; then
             echo "::error::AppImage --version did not report expected version ${EXPECTED_VERSION}"
