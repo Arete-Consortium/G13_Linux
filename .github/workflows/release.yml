@@ -43,7 +43,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install system dependencies
         run: |
@@ -57,6 +57,21 @@ jobs:
         run: |
           chmod +x packaging/appimage/build-appimage.sh
           ./packaging/appimage/build-appimage.sh
+
+      - name: Smoke test AppImage
+        # Runs --version against the just-built AppImage to catch dynamic-linker
+        # regressions (missing libpython, etc.) before publishing. Fails the job
+        # — and therefore the release — if the AppImage can't even start.
+        run: |
+          set -euxo pipefail
+          chmod +x dist/*.AppImage
+          EXPECTED_VERSION="${GITHUB_REF#refs/tags/v}"
+          OUTPUT=$(./dist/*.AppImage --version 2>&1)
+          echo "AppImage --version output: ${OUTPUT}"
+          if ! echo "${OUTPUT}" | grep -q "${EXPECTED_VERSION}"; then
+            echo "::error::AppImage --version did not report expected version ${EXPECTED_VERSION}"
+            exit 1
+          fi
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v7
