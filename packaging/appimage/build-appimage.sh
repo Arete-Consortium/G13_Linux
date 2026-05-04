@@ -59,6 +59,24 @@ for lib in "${LIBS[@]}"; do
     fi
 done
 
+# Bundle libpython so the AppImage runs on systems without matching system Python.
+#
+# Two cases by how the bundled python3 binary is linked:
+#   1. DYNAMIC (GitHub Actions toolcache Python, custom builds): libpython
+#      shows up in `ldd python3` and MUST be bundled — otherwise the AppImage
+#      breaks on any host without a matching libpythonX.Y.so. This is the
+#      bug fixed in v1.7.1 (CI builds were dynamic + libpython unbundled).
+#   2. STATIC (Ubuntu distro python3): libpython is compiled into the binary,
+#      so `ldd` shows nothing and there's nothing to bundle. Fine to skip.
+echo "=== Bundling libpython ==="
+LIBPYTHON_PATH=$(ldd "$(which python3)" 2>/dev/null | grep -oP '/[^ ]*libpython[^ ]+\.so[^ ]*' | head -1)
+if [ -n "${LIBPYTHON_PATH}" ] && [ -f "${LIBPYTHON_PATH}" ]; then
+    echo "Found dynamic libpython at: ${LIBPYTHON_PATH}"
+    cp -L "${LIBPYTHON_PATH}" "${APPDIR}/usr/lib/"
+else
+    echo "No dynamic libpython detected (python3 appears statically linked). Skipping bundle."
+fi
+
 echo "=== Setting up AppImage structure ==="
 # Copy AppRun
 cp "${SCRIPT_DIR}/AppRun" "${APPDIR}/"
