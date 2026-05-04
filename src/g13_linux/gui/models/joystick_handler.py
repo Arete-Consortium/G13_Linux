@@ -76,47 +76,79 @@ class JoystickConfig:
     deadzone: int = 20  # Center deadzone (0-127)
     sensitivity: float = 1.0  # Axis sensitivity multiplier
 
-    # Digital mode key mappings (evdev key names)
-    key_up: str = "KEY_UP"
-    key_down: str = "KEY_DOWN"
-    key_left: str = "KEY_LEFT"
-    key_right: str = "KEY_RIGHT"
+    # Digital mode key mappings (evdev key names).
+    # Each direction can be a single key OR a modifier combo (e.g. Ctrl+L).
+    # Stored as a tuple so the dataclass default is hashable. JSON profiles
+    # can specify either a string ("KEY_L") or a list (["KEY_LEFTCTRL", "KEY_L"])
+    # — both are normalized to a tuple via _parse_key_mapping.
+    key_up: tuple[str, ...] = ("KEY_UP",)
+    key_down: tuple[str, ...] = ("KEY_DOWN",)
+    key_left: tuple[str, ...] = ("KEY_LEFT",)
+    key_right: tuple[str, ...] = ("KEY_RIGHT",)
 
     # Diagonal support
     allow_diagonals: bool = True
 
-    @staticmethod
-    def _parse_key_mapping(value, default: str) -> str:
+    def __post_init__(self):
+        """Normalize key_* fields to tuples regardless of caller input shape.
+
+        Allows direct construction with strings (legacy) or lists, e.g.:
+            JoystickConfig(key_up="KEY_W")
+            JoystickConfig(key_up=["KEY_LEFTCTRL", "KEY_L"])
+        Both end up as tuples internally.
         """
-        Parse key mapping from modern or legacy profile formats.
+        self.key_up = self._coerce_key_seq(self.key_up)
+        self.key_down = self._coerce_key_seq(self.key_down)
+        self.key_left = self._coerce_key_seq(self.key_left)
+        self.key_right = self._coerce_key_seq(self.key_right)
+
+    @staticmethod
+    def _coerce_key_seq(value) -> tuple[str, ...]:
+        """Coerce a value (str/list/tuple) into a tuple of key names."""
+        if isinstance(value, tuple):
+            return value
+        if isinstance(value, str):
+            return (value,)
+        if isinstance(value, list):
+            return tuple(v for v in value if isinstance(v, str))
+        return (str(value),)
+
+    @staticmethod
+    def _parse_key_mapping(value, default: str) -> tuple[str, ...]:
+        """
+        Parse key mapping from modern, combo, or legacy profile formats.
+
+        Returns a tuple of evdev key names. Single-key values become a
+        1-tuple; combos return all modifier+key components in order.
 
         Supported formats:
-        - "KEY_W" (modern flat string)
-        - {"keys": ["KEY_LEFTALT", "KEY_LEFT"], ...} (legacy directional mapping)
-        - ["KEY_W", ...] (fallback)
+        - "KEY_W" → ("KEY_W",)
+        - ["KEY_LEFTCTRL", "KEY_L"] → ("KEY_LEFTCTRL", "KEY_L")
+        - {"keys": ["KEY_LEFTCTRL", "KEY_L"], ...} → ("KEY_LEFTCTRL", "KEY_L")
+        - {"key": "KEY_W"} → ("KEY_W",)
         """
         if isinstance(value, str):
-            return value
+            return (value,)
 
         if isinstance(value, dict):
             keys = value.get("keys", [])
             if isinstance(keys, list):
-                for key_name in keys:
-                    if isinstance(key_name, str):
-                        return key_name
+                collected = tuple(k for k in keys if isinstance(k, str))
+                if collected:
+                    return collected
 
             key_name = value.get("key")
             if isinstance(key_name, str):
-                return key_name
+                return (key_name,)
 
-            return default
+            return (default,)
 
         if isinstance(value, list | tuple):
-            for key_name in value:
-                if isinstance(key_name, str):
-                    return key_name
+            collected = tuple(k for k in value if isinstance(k, str))
+            if collected:
+                return collected
 
-        return default
+        return (default,)
 
     @classmethod
     def from_dict(cls, data: dict) -> "JoystickConfig":
@@ -160,15 +192,24 @@ class JoystickConfig:
         )
 
     def to_dict(self) -> dict:
-        """Convert to dict (profile saving)"""
+        """Convert to dict (profile saving).
+
+        For backward compatibility, single-key directions serialize as strings
+        (the legacy format). Combos serialize as lists. This way pre-combo
+        profiles round-trip identically.
+        """
+
+        def _serialize(keys: tuple[str, ...]):
+            return keys[0] if len(keys) == 1 else list(keys)
+
         return {
             "mode": self.mode.value,
             "deadzone": self.deadzone,
             "sensitivity": self.sensitivity,
-            "key_up": self.key_up,
-            "key_down": self.key_down,
-            "key_left": self.key_left,
-            "key_right": self.key_right,
+            "key_up": _serialize(self.key_up),
+            "key_down": _serialize(self.key_down),
+            "key_left": _serialize(self.key_left),
+            "key_right": _serialize(self.key_right),
             "allow_diagonals": self.allow_diagonals,
         }
 
@@ -231,16 +272,17 @@ class JoystickHandler:
 
     def _start_digital(self):
         """Create keyboard device for direction keys"""
-        # Collect all configured keys
+        # Collect all configured keys (each direction may be a combo, so flatten)
         keys = set()
-        for key_name in [
+        for key_tuple in [
             self.config.key_up,
             self.config.key_down,
             self.config.key_left,
             self.config.key_right,
         ]:
-            if hasattr(e, key_name):
-                keys.add(getattr(e, key_name))
+            for key_name in key_tuple:
+                if hasattr(e, key_name):
+                    keys.add(getattr(e, key_name))
 
         if keys:
             self._key_device = UInput({e.EV_KEY: list(keys)}, name="G13 Joystick Keys")
@@ -316,25 +358,30 @@ class JoystickHandler:
         up = centered_y < -deadzone  # Y is inverted (up = negative)
         down = centered_y > deadzone
 
-        # Build set of keys that should be pressed
+        # Build set of keys that should be pressed.
+        # Each direction may be a combo (e.g. Ctrl+L), so .update() with the
+        # whole tuple — not .add() of a single key.
         should_press: set[str] = set()
 
         if up:
-            should_press.add(self.config.key_up)
+            should_press.update(self.config.key_up)
         if down:
-            should_press.add(self.config.key_down)
+            should_press.update(self.config.key_down)
         if left:
-            should_press.add(self.config.key_left)
+            should_press.update(self.config.key_left)
         if right:
-            should_press.add(self.config.key_right)
+            should_press.update(self.config.key_right)
 
-        # Handle diagonal restriction
-        if not self.config.allow_diagonals and len(should_press) > 1:
+        # Handle diagonal restriction.
+        # NOTE: count by number of *active directions*, not number of keys
+        # (a single combo direction can produce 2+ keys).
+        active_dirs = sum([up, down, left, right])
+        if not self.config.allow_diagonals and active_dirs > 1:
             # Pick the dominant direction (larger magnitude)
             if abs(centered_x) > abs(centered_y):
-                should_press = {self.config.key_left if left else self.config.key_right}
+                should_press = set(self.config.key_left if left else self.config.key_right)
             else:
-                should_press = {self.config.key_up if up else self.config.key_down}
+                should_press = set(self.config.key_up if up else self.config.key_down)
 
         # Release keys that should no longer be pressed
         for key_name in self._keys_pressed - should_press:

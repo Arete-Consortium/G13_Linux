@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-05-03
+
+### Added
+- Joystick directions (`joystick.key_up/key_down/key_left/key_right`) now accept modifier+key combos as a JSON list, e.g. `"key_up": ["KEY_LEFTCTRL", "KEY_L"]`. Previously only single keys were supported, so EVE-style "Ctrl+L = lock target" couldn't be bound to a stick direction without rebinding the game.
+
+### Changed
+- `JoystickConfig.key_up/key_down/key_left/key_right` are now stored as `tuple[str, ...]` internally. `__post_init__` coerces strings/lists to tuples so existing call sites (`JoystickConfig(key_up="KEY_W")`) keep working unchanged.
+- Single-key direction profiles still serialize as bare strings in JSON for backward compat. Combo directions serialize as lists.
+
+### Fixed
+- Legacy directional mapping objects (`{"keys": ["KEY_LEFTALT", "KEY_LEFT"]}` under `up`/`down`/`left`/`right`) now preserve all keys in the combo. Pre-1.7.2 the parser dropped everything except the first key.
+
 ## [1.7.1] - 2026-05-03
 
 ### Fixed

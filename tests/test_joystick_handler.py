@@ -30,10 +30,12 @@ class TestJoystickConfig:
         assert config.mode == JoystickMode.ANALOG
         assert config.deadzone == 20
         assert config.sensitivity == 1.0
-        assert config.key_up == "KEY_UP"
-        assert config.key_down == "KEY_DOWN"
-        assert config.key_left == "KEY_LEFT"
-        assert config.key_right == "KEY_RIGHT"
+        # Direction keys are normalized to tuples (single keys are 1-tuples,
+        # combos are N-tuples). See JoystickConfig._coerce_key_seq.
+        assert config.key_up == ("KEY_UP",)
+        assert config.key_down == ("KEY_DOWN",)
+        assert config.key_left == ("KEY_LEFT",)
+        assert config.key_right == ("KEY_RIGHT",)
         assert config.allow_diagonals is True
 
     def test_from_dict_defaults(self):
@@ -56,10 +58,10 @@ class TestJoystickConfig:
         assert config.mode == JoystickMode.DIGITAL
         assert config.deadzone == 30
         assert config.sensitivity == 1.5
-        assert config.key_up == "KEY_W"
-        assert config.key_down == "KEY_S"
-        assert config.key_left == "KEY_A"
-        assert config.key_right == "KEY_D"
+        assert config.key_up == ("KEY_W",)
+        assert config.key_down == ("KEY_S",)
+        assert config.key_left == ("KEY_A",)
+        assert config.key_right == ("KEY_D",)
         assert config.allow_diagonals is False
 
     def test_from_dict_invalid_mode(self):
@@ -69,6 +71,49 @@ class TestJoystickConfig:
     def test_from_dict_legacy_directional_mode_alias(self):
         config = JoystickConfig.from_dict({"mode": "directional"})
         assert config.mode == JoystickMode.DIGITAL
+
+    def test_from_dict_combo_direction_keys(self):
+        """Each direction can be a modifier+key combo (v1.7.2+)."""
+        data = {
+            "mode": "digital",
+            "key_up": ["KEY_LEFTCTRL", "KEY_L"],
+            "key_down": ["KEY_LEFTCTRL", "KEY_4"],
+            "key_left": "KEY_LEFT",
+            "key_right": "KEY_RIGHT",
+        }
+        config = JoystickConfig.from_dict(data)
+        assert config.key_up == ("KEY_LEFTCTRL", "KEY_L")
+        assert config.key_down == ("KEY_LEFTCTRL", "KEY_4")
+        assert config.key_left == ("KEY_LEFT",)
+        assert config.key_right == ("KEY_RIGHT",)
+
+    def test_to_dict_roundtrip_preserves_single_keys_as_strings(self):
+        """Single-key directions serialize as strings (legacy format)."""
+        config = JoystickConfig(
+            mode=JoystickMode.DIGITAL,
+            key_up="KEY_W",
+            key_down="KEY_S",
+            key_left="KEY_A",
+            key_right="KEY_D",
+        )
+        data = config.to_dict()
+        assert data["key_up"] == "KEY_W"
+        assert data["key_down"] == "KEY_S"
+
+    def test_to_dict_roundtrip_serializes_combos_as_lists(self):
+        """Combo directions serialize as lists."""
+        config = JoystickConfig(
+            mode=JoystickMode.DIGITAL,
+            key_up=["KEY_LEFTCTRL", "KEY_L"],
+            key_down=["KEY_LEFTCTRL", "KEY_4"],
+            key_left="KEY_LEFT",
+            key_right="KEY_RIGHT",
+        )
+        data = config.to_dict()
+        assert data["key_up"] == ["KEY_LEFTCTRL", "KEY_L"]
+        assert data["key_down"] == ["KEY_LEFTCTRL", "KEY_4"]
+        assert data["key_left"] == "KEY_LEFT"
+        assert data["key_right"] == "KEY_RIGHT"
 
     def test_from_dict_legacy_directional_mapping_objects(self):
         data = {
@@ -80,11 +125,12 @@ class TestJoystickConfig:
         }
         config = JoystickConfig.from_dict(data)
         assert config.mode == JoystickMode.DIGITAL
-        assert config.key_up == "KEY_W"
-        assert config.key_down == "KEY_S"
-        # Legacy combo mappings are reduced to a usable primary key
-        assert config.key_left == "KEY_LEFTALT"
-        assert config.key_right == "KEY_LEFTALT"
+        assert config.key_up == ("KEY_W",)
+        assert config.key_down == ("KEY_S",)
+        # Combo direction mappings are preserved as tuples (was lossy in v1.7.1
+        # and earlier — only the first key was kept).
+        assert config.key_left == ("KEY_LEFTALT", "KEY_LEFT")
+        assert config.key_right == ("KEY_LEFTALT", "KEY_RIGHT")
 
     def test_to_dict(self):
         config = JoystickConfig(
