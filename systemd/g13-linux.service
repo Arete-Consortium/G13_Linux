@@ -1,0 +1,40 @@
+# User-level systemd service for the G13 Linux input daemon.
+#
+# The DAEMON (g13-linux run) — not the GUI — is what should run as a service.
+# The GUI is a config tool; users launch it on demand. The daemon is what
+# translates G13 button presses into keyboard events via /dev/uinput, so it
+# must be running for the G13 to do anything in any application.
+#
+# Install:
+#   ./systemd/install-service.sh
+# or manually:
+#   cp systemd/g13-linux.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now g13-linux.service
+#
+# Logs:
+#   journalctl --user -u g13-linux.service -f
+
+[Unit]
+Description=G13 Linux Input Daemon
+Documentation=https://github.com/AreteDriver/G13_Linux
+# Wait for the user's graphical session — the daemon injects keystrokes into
+# whatever's focused, which only makes sense once the desktop is up.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# pipx install path is ~/.local/bin; pip install --user also lands there.
+# %h expands to the user's home dir.
+ExecStart=%h/.local/bin/g13-linux run
+Restart=on-failure
+RestartSec=5
+
+# The daemon needs /dev/uinput (created by the uinput kernel module).
+# uinput must be loaded — modules-load.d/uinput.conf in this directory
+# handles that at boot. The current user must be in the 'input' group
+# for /dev/uinput access without sudo.
+
+[Install]
+WantedBy=graphical-session.target
