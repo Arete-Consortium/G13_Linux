@@ -69,11 +69,25 @@ fi
 cp -r "${BUILD_DIR}/venv/lib/python${PYTHON_VERSION}/site-packages" "${APPDIR}/usr/lib/python${PYTHON_VERSION}/"
 
 echo "=== Copying system libraries ==="
-# Copy required shared libraries
+# Copy required shared libraries.
+# Qt6 deps (libEGL, libxkbcommon, libxcb-*) are needed for the GUI to launch;
+# PyQt6's bundled Qt6 libraries dlopen them at runtime and don't ship them.
 LIBS=(
     "/usr/lib/x86_64-linux-gnu/libhidapi-hidraw.so"*
     "/usr/lib/x86_64-linux-gnu/libhidapi-libusb.so"*
     "/usr/lib/x86_64-linux-gnu/libusb-1.0.so"*
+    "/usr/lib/x86_64-linux-gnu/libEGL.so"*
+    "/usr/lib/x86_64-linux-gnu/libGL.so"*
+    "/usr/lib/x86_64-linux-gnu/libGLdispatch.so"*
+    "/usr/lib/x86_64-linux-gnu/libGLX.so"*
+    "/usr/lib/x86_64-linux-gnu/libxkbcommon.so"*
+    "/usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so"*
+    "/usr/lib/x86_64-linux-gnu/libxcb-cursor.so"*
+    "/usr/lib/x86_64-linux-gnu/libxcb-icccm.so"*
+    "/usr/lib/x86_64-linux-gnu/libxcb-keysyms.so"*
+    "/usr/lib/x86_64-linux-gnu/libxcb-shape.so"*
+    "/usr/lib/x86_64-linux-gnu/libxcb-xinerama.so"*
+    "/usr/lib/x86_64-linux-gnu/libxcb-xkb.so"*
 )
 
 for lib in "${LIBS[@]}"; do

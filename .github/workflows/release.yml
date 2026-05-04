@@ -48,7 +48,11 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhidapi-dev libhidapi-hidraw0 libusb-1.0-0-dev wget
+          # Includes Qt runtime deps (libegl1, libxkbcommon, libxcb-*) so the
+          # AppImage build can bundle them for end-user GUI launch.
+          sudo apt-get install -y libhidapi-dev libhidapi-hidraw0 libusb-1.0-0-dev wget \
+            libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 \
+            libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
 
       - name: Install PIL for icon generation
         run: pip install Pillow

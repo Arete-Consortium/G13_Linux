@@ -17,5 +17,15 @@ export PYTHONPATH="${HERE}/usr/lib/${PYTHON_VERSION}/site-packages"
 export QT_PLUGIN_PATH="${HERE}/usr/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins"
 export QT_QPA_PLATFORM_PLUGIN_PATH="${QT_PLUGIN_PATH}/platforms"
 
-# Run the GUI
-exec "${HERE}/usr/bin/python3" -m g13_linux.gui.main "$@"
+# Route CLI flags/subcommands to the CLI module so they don't pull in
+# PyQt6/Qt at import time. Only launch the GUI for default "no args" or
+# explicit gui invocations. This keeps `AppImage --version` and
+# `AppImage doctor` etc working even if Qt system deps are missing.
+case "${1:-}" in
+    --version|-v|--help|-h|run|lcd|color|effect|doctor|profile)
+        exec "${HERE}/usr/bin/python3" -m g13_linux.cli "$@"
+        ;;
+    *)
+        exec "${HERE}/usr/bin/python3" -m g13_linux.gui.main "$@"
+        ;;
+esac
