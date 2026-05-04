@@ -36,10 +36,33 @@ cp "$(which python3)" "${APPDIR}/usr/bin/python${PYTHON_VERSION}"
 ln -sf "python${PYTHON_VERSION}" "${APPDIR}/usr/bin/python3"
 ln -sf "python${PYTHON_VERSION}" "${APPDIR}/usr/bin/python"
 
-# Copy Python standard library
-PYTHON_LIB="/usr/lib/python${PYTHON_VERSION}"
-if [ -d "${PYTHON_LIB}" ]; then
-    cp -r "${PYTHON_LIB}" "${APPDIR}/usr/lib/"
+# Copy Python standard library — discovered via sysconfig so this works for
+# both Ubuntu distro Python (/usr/lib/python3.X) and the GitHub Actions
+# toolcache Python (/opt/hostedtoolcache/Python/X.Y.Z/x64/lib/python3.X).
+# Hardcoding /usr/lib/python3.X silently skipped the copy on toolcache
+# layouts and left the AppImage missing C extensions like _csv.
+PYTHON_STDLIB=$(${PYTHON} -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
+echo "Python stdlib: ${PYTHON_STDLIB}"
+
+if [ ! -d "${PYTHON_STDLIB}" ]; then
+    echo "ERROR: sysconfig stdlib path does not exist: ${PYTHON_STDLIB}"
+    exit 1
+fi
+
+mkdir -p "${APPDIR}/usr/lib/python${PYTHON_VERSION}"
+cp -r "${PYTHON_STDLIB}/." "${APPDIR}/usr/lib/python${PYTHON_VERSION}/"
+
+# Verify lib-dynload made it (contains C extensions like _csv, _ssl, etc).
+if [ ! -d "${APPDIR}/usr/lib/python${PYTHON_VERSION}/lib-dynload" ]; then
+    # Fall back: try platstdlib path (some layouts split .py files from .so)
+    PYTHON_PLATSTDLIB=$(${PYTHON} -c "import sysconfig; print(sysconfig.get_path('platstdlib'))")
+    if [ -d "${PYTHON_PLATSTDLIB}/lib-dynload" ]; then
+        echo "Copying lib-dynload from platstdlib: ${PYTHON_PLATSTDLIB}/lib-dynload"
+        cp -r "${PYTHON_PLATSTDLIB}/lib-dynload" "${APPDIR}/usr/lib/python${PYTHON_VERSION}/"
+    else
+        echo "ERROR: lib-dynload not found in stdlib or platstdlib. AppImage will fail to import C extensions."
+        exit 1
+    fi
 fi
 
 # Copy site-packages from venv

@@ -11,10 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - AppImage build now bundles `libpython3.X.so` so the AppImage runs on hosts without a matching system Python. The v1.7.0 AppImage failed on Ubuntu 24.04 (Noble) with `libpython3.11.so.1.0: cannot open shared object file`.
+- AppImage build now discovers Python's stdlib path via `sysconfig.get_path('stdlib')` instead of hardcoding `/usr/lib/python3.X`. The hardcoded path silently skipped on GitHub Actions toolcache Python layouts, leaving the AppImage missing C extensions (`_csv`, `_ssl`, etc).
 - AppImage build now targets Python 3.12 (matches Noble LTS) instead of 3.11.
 
 ### CI
-- `release.yml` now smoke-tests the freshly-built AppImage with `--appimage-extract-and-run --version` before publishing. Catches dynamic-linker regressions and FUSE-availability issues at build time instead of at install time.
+- `release.yml` now smoke-tests the freshly-built AppImage with `--appimage-extract-and-run --version` before publishing. Catches dynamic-linker regressions, missing-C-extension regressions, and FUSE-availability issues at build time instead of at install time.
 
 ## [1.7.0] - 2026-05-03
 
